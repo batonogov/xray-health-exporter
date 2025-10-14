@@ -1,8 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseVLESSURL(t *testing.T) {
@@ -228,4 +236,309 @@ func TestSOCKS5Dialer(t *testing.T) {
 	if dialer.proxyAddr != "127.0.0.1:1080" {
 		t.Errorf("proxyAddr = %v, want 127.0.0.1:1080", dialer.proxyAddr)
 	}
+}
+
+func TestLoadConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		wantErr   bool
+		checkFunc func(*testing.T, *Config)
+	}{
+		{
+			name: "valid config with defaults",
+			yaml: `defaults:
+  check_url: "https://example.com"
+  check_interval: "1m"
+  check_timeout: "10s"
+tunnels:
+  - name: "test-tunnel"
+    url: "vless://uuid@example.com:443?type=tcp&security=reality&pbk=key&sni=test.com&fp=chrome"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if len(c.Tunnels) != 1 {
+					t.Errorf("expected 1 tunnel, got %d", len(c.Tunnels))
+				}
+				if c.Tunnels[0].Name != "test-tunnel" {
+					t.Errorf("tunnel name = %v, want test-tunnel", c.Tunnels[0].Name)
+				}
+				if c.Tunnels[0].CheckURL != "https://example.com" {
+					t.Errorf("check_url = %v, want https://example.com", c.Tunnels[0].CheckURL)
+				}
+			},
+		},
+		{
+			name: "tunnel with custom check_url",
+			yaml: `defaults:
+  check_url: "https://default.com"
+tunnels:
+  - name: "custom"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
+    check_url: "https://custom.com"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if c.Tunnels[0].CheckURL != "https://custom.com" {
+					t.Errorf("check_url = %v, want https://custom.com", c.Tunnels[0].CheckURL)
+				}
+			},
+		},
+		{
+			name: "config with no defaults uses global defaults",
+			yaml: `tunnels:
+  - name: "test"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if c.Tunnels[0].CheckURL != defaultCheckURL {
+					t.Errorf("check_url = %v, want %v", c.Tunnels[0].CheckURL, defaultCheckURL)
+				}
+				if c.Tunnels[0].CheckInterval != defaultCheckInterval.String() {
+					t.Errorf("check_interval = %v, want %v", c.Tunnels[0].CheckInterval, defaultCheckInterval.String())
+				}
+			},
+		},
+		{
+			name:    "empty config",
+			yaml:    ``,
+			wantErr: true,
+		},
+		{
+			name: "no tunnels",
+			yaml: `defaults:
+  check_url: "https://example.com"
+tunnels: []`,
+			wantErr: true,
+		},
+		{
+			name: "tunnel without url",
+			yaml: `tunnels:
+  - name: "test"`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid yaml",
+			yaml:    `invalid: yaml: content:`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Создаем временный файл
+			tmpDir := t.TempDir()
+			configFile := filepath.Join(tmpDir, "config.yaml")
+			if err := os.WriteFile(configFile, []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("failed to create temp config: %v", err)
+			}
+
+			config, err := loadConfig(configFile)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("loadConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && tt.checkFunc != nil {
+				tt.checkFunc(t, config)
+			}
+		})
+	}
+
+	// Test file not found
+	t.Run("file not found", func(t *testing.T) {
+		_, err := loadConfig("/nonexistent/config.yaml")
+		if err == nil {
+			t.Error("expected error for nonexistent file")
+		}
+	})
+}
+
+func TestSOCKS5DialContext(t *testing.T) {
+	// Создаем mock SOCKS5 сервер
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer listener.Close()
+
+	socksAddr := listener.Addr().String()
+
+	// Запускаем mock SOCKS5 сервер в горутине
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+
+				// Читаем SOCKS5 handshake [VER, NMETHODS, METHODS]
+				buf := make([]byte, 3)
+				if _, err := c.Read(buf); err != nil {
+					return
+				}
+
+				// Отвечаем [VER, METHOD]
+				if _, err := c.Write([]byte{5, 0}); err != nil {
+					return
+				}
+
+				// Читаем CONNECT request (минимум 4 байта)
+				req := make([]byte, 4)
+				if _, err := c.Read(req); err != nil {
+					return
+				}
+
+				// Читаем оставшуюся часть запроса в зависимости от типа адреса
+				switch req[3] {
+				case 1: // IPv4
+					c.Read(make([]byte, 4+2))
+				case 3: // Domain
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4: // IPv6
+					c.Read(make([]byte, 16+2))
+				}
+
+				// Отвечаем успехом: [VER, REP, RSV, ATYP, BIND.ADDR, BIND.PORT]
+				// REP = 0 (успех)
+				response := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
+				if _, err := c.Write(response); err != nil {
+					return
+				}
+
+				// Теперь соединение установлено, можно передавать данные
+				// Для теста просто держим соединение открытым
+				time.Sleep(100 * time.Millisecond)
+			}(conn)
+		}
+	}()
+
+	// Тестируем диалер
+	dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+
+	ctx := context.Background()
+	conn, err := dialer.DialContext(ctx, "tcp", "example.com:80")
+	if err != nil {
+		t.Fatalf("DialContext() error = %v", err)
+	}
+	defer conn.Close()
+
+	if conn == nil {
+		t.Error("DialContext() returned nil connection")
+	}
+}
+
+func TestSOCKS5DialContextErrors(t *testing.T) {
+	// Тест с несуществующим прокси
+	t.Run("proxy connection failed", func(t *testing.T) {
+		dialer := newSOCKS5Dialer("127.0.0.1:9999", 1*time.Second)
+		ctx := context.Background()
+		_, err := dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for nonexistent proxy")
+		}
+	})
+
+	// Тест с невалидным адресом назначения
+	t.Run("invalid destination address", func(t *testing.T) {
+		dialer := newSOCKS5Dialer("127.0.0.1:1080", 1*time.Second)
+		ctx := context.Background()
+		_, err := dialer.DialContext(ctx, "tcp", "invalid-address")
+		if err == nil {
+			t.Error("expected error for invalid address")
+		}
+	})
+}
+
+func TestCheckTunnel(t *testing.T) {
+	// Создаем mock HTTP сервер
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+	defer ts.Close()
+
+	// Создаем mock SOCKS5 сервер (упрощенная версия, перенаправляющая на реальный HTTP)
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	socksAddr := socksListener.Addr().String()
+
+	// Mock SOCKS5 сервер, который принимает подключения
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+
+				// SOCKS5 handshake
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				// CONNECT request
+				req := make([]byte, 4)
+				c.Read(req)
+
+				// Читаем адрес
+				switch req[3] {
+				case 1: // IPv4
+					c.Read(make([]byte, 4+2))
+				case 3: // Domain
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4: // IPv6
+					c.Read(make([]byte, 16+2))
+				}
+
+				// Отвечаем успехом
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+
+				// Теперь проксируем соединение к реальному HTTP серверу
+				// Для упрощения теста просто отправляем HTTP ответ напрямую
+				httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+				c.Write([]byte(httpResponse))
+			}(conn)
+		}
+	}()
+
+	// Создаем TunnelInstance для теста
+	_, portStr, _ := net.SplitHostPort(socksAddr)
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "test-tunnel",
+		VLESSConfig: &VLESSConfig{
+			Address:  "test.example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      ts.URL,
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	// Даем время серверу запуститься
+	time.Sleep(100 * time.Millisecond)
+
+	// Выполняем проверку
+	// Примечание: checkTunnel изменяет метрики Prometheus, но не возвращает значение
+	// Мы можем только проверить, что она не паникует
+	checkTunnel(ti)
+
+	// Тест завершен успешно, если не было паники
 }

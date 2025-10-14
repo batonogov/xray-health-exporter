@@ -69,24 +69,24 @@ export CONFIG_FILE=./config.yaml
 
 ## Метрики
 
-Все метрики содержат labels: `server`, `security`, `sni`
+Все метрики содержат labels: `name`, `server`, `security`, `sni`
 
-- `xray_tunnel_up{server, security, sni}` - статус туннеля (1=работает, 0=не работает)
-- `xray_tunnel_latency_seconds{server, security, sni}` - латентность подключения
-- `xray_tunnel_check_total{server, security, sni, result}` - счётчик проверок
-- `xray_tunnel_last_success_timestamp{server, security, sni}` - timestamp последней успешной проверки
-- `xray_tunnel_http_status{server, security, sni}` - HTTP статус код при проверке
+- `xray_tunnel_up{name, server, security, sni}` - статус туннеля (1=работает, 0=не работает)
+- `xray_tunnel_latency_seconds{name, server, security, sni}` - латентность подключения
+- `xray_tunnel_check_total{name, server, security, sni, result}` - счётчик проверок
+- `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp последней успешной проверки
+- `xray_tunnel_http_status{name, server, security, sni}` - HTTP статус код при проверке
 
 **Пример метрик:**
 ```
-xray_tunnel_up{server="example.com:443",security="reality",sni="google.com"} 1
-xray_tunnel_latency_seconds{server="example.com:443",security="reality",sni="google.com"} 0.345
-xray_tunnel_check_total{server="example.com:443",security="reality",sni="google.com",result="success"} 42
-xray_tunnel_last_success_timestamp{server="example.com:443",security="reality",sni="google.com"} 1704117344
-xray_tunnel_http_status{server="example.com:443",security="reality",sni="google.com"} 200
+xray_tunnel_up{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 1
+xray_tunnel_latency_seconds{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 0.345
+xray_tunnel_check_total{name="Server 1",server="example.com:443",security="reality",sni="google.com",result="success"} 42
+xray_tunnel_last_success_timestamp{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 1704117344
+xray_tunnel_http_status{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 200
 ```
 
-> 💡 Labels позволяют мониторить несколько VLESS серверов одновременно
+> 💡 Label `name` содержит имя туннеля из конфига (или `host:port` если имя не указано). Labels позволяют мониторить несколько VLESS серверов одновременно
 
 **Endpoints:**
 - `/metrics` - Prometheus метрики
@@ -166,8 +166,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Туннель {{ $labels.server }} не работает"
-          description: "Туннель до {{ $labels.server }} ({{ $labels.security }}) не работает более 5 минут"
+          summary: "Туннель {{ $labels.name }} не работает"
+          description: "Туннель {{ $labels.name }} ({{ $labels.server }}, {{ $labels.security }}) не работает более 5 минут"
 
       # Высокая задержка
       - alert: XrayHighLatency
@@ -176,8 +176,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Высокая задержка на {{ $labels.server }}"
-          description: "Задержка туннеля {{ $value }}s (порог: 2s)"
+          summary: "Высокая задержка на {{ $labels.name }}"
+          description: "Туннель {{ $labels.name }} имеет задержку {{ $value }}s (порог: 2s)"
 
       # Туннель давно не проверялся
       - alert: XrayNoRecentCheck
@@ -186,8 +186,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.server }} давно не проверялся"
-          description: "Последняя успешная проверка была {{ $value }}s назад"
+          summary: "{{ $labels.name }} давно не проверялся"
+          description: "Туннель {{ $labels.name }} не проверялся успешно {{ $value }}s"
 ```
 
 ## Разработка

@@ -38,7 +38,7 @@ var (
 			Name: "xray_tunnel_up",
 			Help: "1 if tunnel is working, 0 otherwise",
 		},
-		[]string{"server", "security", "sni"},
+		[]string{"name", "server", "security", "sni"},
 	)
 
 	tunnelLatency = prometheus.NewGaugeVec(
@@ -46,7 +46,7 @@ var (
 			Name: "xray_tunnel_latency_seconds",
 			Help: "Latency of the tunnel check in seconds",
 		},
-		[]string{"server", "security", "sni"},
+		[]string{"name", "server", "security", "sni"},
 	)
 
 	tunnelCheckTotal = prometheus.NewCounterVec(
@@ -54,7 +54,7 @@ var (
 			Name: "xray_tunnel_check_total",
 			Help: "Total number of tunnel checks by result",
 		},
-		[]string{"server", "security", "sni", "result"},
+		[]string{"name", "server", "security", "sni", "result"},
 	)
 
 	tunnelLastSuccess = prometheus.NewGaugeVec(
@@ -62,7 +62,7 @@ var (
 			Name: "xray_tunnel_last_success_timestamp",
 			Help: "Timestamp of last successful tunnel check",
 		},
-		[]string{"server", "security", "sni"},
+		[]string{"name", "server", "security", "sni"},
 	)
 
 	tunnelHTTPStatus = prometheus.NewGaugeVec(
@@ -70,7 +70,7 @@ var (
 			Name: "xray_tunnel_http_status",
 			Help: "HTTP status code from tunnel check",
 		},
-		[]string{"server", "security", "sni"},
+		[]string{"name", "server", "security", "sni"},
 	)
 )
 
@@ -485,6 +485,7 @@ func checkTunnel(ti *TunnelInstance) {
 	// Labels для метрик
 	serverLabel := fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port)
 	labels := prometheus.Labels{
+		"name":     ti.Name,
 		"server":   serverLabel,
 		"security": ti.VLESSConfig.Security,
 		"sni":      ti.VLESSConfig.SNI,
@@ -498,6 +499,7 @@ func checkTunnel(ti *TunnelInstance) {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(prometheus.Labels{
+			"name":     ti.Name,
 			"server":   serverLabel,
 			"security": ti.VLESSConfig.Security,
 			"sni":      ti.VLESSConfig.SNI,
@@ -525,6 +527,7 @@ func checkTunnel(ti *TunnelInstance) {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(prometheus.Labels{
+			"name":     ti.Name,
 			"server":   serverLabel,
 			"security": ti.VLESSConfig.Security,
 			"sni":      ti.VLESSConfig.SNI,
@@ -541,6 +544,7 @@ func checkTunnel(ti *TunnelInstance) {
 		log.Printf("[%s] ✗ Tunnel DOWN: status %d", ti.Name, resp.StatusCode)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(prometheus.Labels{
+			"name":     ti.Name,
 			"server":   serverLabel,
 			"security": ti.VLESSConfig.Security,
 			"sni":      ti.VLESSConfig.SNI,
@@ -559,6 +563,7 @@ func checkTunnel(ti *TunnelInstance) {
 	tunnelLatency.With(labels).Set(duration.Seconds())
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
 	tunnelCheckTotal.With(prometheus.Labels{
+		"name":     ti.Name,
 		"server":   serverLabel,
 		"security": ti.VLESSConfig.Security,
 		"sni":      ti.VLESSConfig.SNI,

@@ -1,0 +1,4 @@
+# Игнорируем файлы с примерами
+.env.example
+*.example
+main_test.go

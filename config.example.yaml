@@ -1,0 +1,35 @@
+# Конфигурация Xray Health Exporter
+
+# Глобальные значения по умолчанию (опционально)
+# Эти значения будут использоваться для всех туннелей, если не переопределены
+defaults:
+  check_url: "https://www.google.com"
+  check_interval: "30s"
+  check_timeout: "30s"
+
+# Список VLESS туннелей для мониторинга
+tunnels:
+  # Первый туннель - используются все значения по умолчанию
+  - name: "Server 1"
+    url: "vless://your-uuid@example.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome&sid=short-id"
+
+  # Второй туннель - с переопределением URL для проверки
+  - name: "Server 2"
+    url: "vless://your-uuid@example2.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome"
+    check_url: "https://www.cloudflare.com"
+
+  # Третий туннель - с переопределением таймаута и интервала
+  - name: "Server 3"
+    url: "vless://your-uuid@example3.com:443?type=tcp&security=tls&sni=example3.com&fp=chrome"
+    check_interval: "60s"
+    check_timeout: "45s"
+
+  # Туннель без имени (будет использоваться "host:port" в качестве имени)
+  - url: "vless://your-uuid@example4.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome"
+    check_url: "https://1.1.1.1"
+
+# Примечания:
+# - Требуется как минимум один туннель
+# - Каждый туннель должен иметь валидный VLESS URL
+# - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082, ...)
+# - Формат duration: "30s", "1m", "1h30m" и т.д.

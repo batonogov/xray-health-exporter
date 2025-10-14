@@ -22,9 +22,23 @@ profile.cov
 go.work
 go.work.sum
 
-# Конфигурационный файл с секретами (используйте config.example.yaml как шаблон)
+# Конфигурационный файл с секретами (не включать в образ)
 config.yaml
 
 # Редакторы/IDE
 # .idea/
 # .vscode/
+
+# Прочее
+.dockerignore
+.git
+.github
+.gitignore
+.gitleaksignore
+.pre-commit-config.yaml
+Dockerfile
+LICENSE
+README.md
+Taskfile.yml
+config.example.yaml
+main_test.go

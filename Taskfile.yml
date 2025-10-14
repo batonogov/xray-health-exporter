@@ -1,0 +1,49 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Собрать бинарный файл
+    cmds:
+      - go build -o xray-health-exporter .
+
+  test:
+    desc: Запустить тесты
+    cmds:
+      - go test -v -cover ./...
+
+  test-race:
+    desc: Запустить тесты с детектором гонок
+    cmds:
+      - go test -v -race ./...
+
+  install-hooks:
+    desc: Установить git pre-commit хуки
+    cmds:
+      - pre-commit install
+      - echo "✅ Pre-commit хуки установлены!"
+
+  clean:
+    desc: Очистить артефакты сборки
+    cmds:
+      - rm -f xray-health-exporter coverage.txt
+
+  run:
+    desc: Запустить приложение
+    cmds:
+      - go run .
+
+  docker-build:
+    desc: Собрать Docker образ
+    cmds:
+      - docker build -t xray-health-exporter .
+
+  docker-build-multi:
+    desc: Собрать мультиплатформенный Docker образ
+    cmds:
+      - docker buildx build --platform linux/amd64,linux/arm64 -t xray-health-exporter .
+
+  docker-run:
+    desc: Запустить Docker контейнер
+    deps: [docker-build]
+    cmds:
+      - docker run --rm -v $(pwd)/config.yaml:/app/config.yaml:ro -p 9090:9090 xray-health-exporter

@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.txt
+          fail_ci_if_error: false
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate version
+        id: version
+        run: |
+          VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+
+  release:
+    needs: [build, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate version
+        id: version
+        run: |
+          VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body: |
+            ## Xray Health Exporter
+
+            Prometheus exporter для мониторинга множественных VLESS туннелей со встроенным Xray-core.
+
+            ### Установка
+
+            **Бинарники:**
+            - **Linux x64**: `xray-health-exporter-linux-amd64`
+            - **Linux ARM64**: `xray-health-exporter-linux-arm64`
+
+            ```bash
+            # Скачайте и сделайте исполняемым
+            chmod +x xray-health-exporter-*
+
+            # Создайте config.yaml
+            cat > config.yaml <<EOF
+            defaults:
+              check_url: "https://www.google.com"
+              check_interval: "30s"
+              check_timeout: "30s"
+            tunnels:
+              - name: "Server 1"
+                url: "vless://uuid@host:443?..."
+            EOF
+
+            # Запустите
+            export CONFIG_FILE=./config.yaml
+            ./xray-health-exporter-*
+            ```
+
+            **Docker:**
+            ```bash
+            # Создайте config.yaml (см. выше)
+
+            # Запустите
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            docker run --rm \
+              -v $(pwd)/config.yaml:/app/config.yaml:ro \
+              -p 9090:9090 \
+              ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ```
+
+            См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.
+
+            ### Что нового
+          files: artifacts/*/xray-health-exporter-*
+          generate_release_notes: true

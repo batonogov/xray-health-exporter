@@ -12,8 +12,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/xtls/xray-core/core"
@@ -123,6 +125,13 @@ type TunnelInstance struct {
 	CheckURL      string
 	CheckInterval time.Duration
 	CheckTimeout  time.Duration
+	cancelFunc    context.CancelFunc
+}
+
+// TunnelManager manages tunnel instances with thread-safe access
+type TunnelManager struct {
+	mu        sync.RWMutex
+	instances []*TunnelInstance
 }
 
 func loadConfig(configPath string) (*Config, error) {
@@ -571,15 +580,163 @@ func checkTunnel(ti *TunnelInstance) {
 	}).Inc()
 }
 
-func runTunnelChecker(ti *TunnelInstance) {
+func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
 	ticker := time.NewTicker(ti.CheckInterval)
 	defer ticker.Stop()
 
 	// Первая проверка сразу
 	checkTunnel(ti)
 
-	for range ticker.C {
-		checkTunnel(ti)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkTunnel(ti)
+		}
+	}
+}
+
+// initializeTunnels creates and starts all tunnel instances from config
+func initializeTunnels(config *Config, debug bool) ([]*TunnelInstance, error) {
+	if len(config.Tunnels) == 0 {
+		return nil, fmt.Errorf("no tunnels to initialize")
+	}
+
+	var tunnelInstances []*TunnelInstance
+	baseSocksPort := defaultSocksPort
+
+	for i, tunnel := range config.Tunnels {
+		socksPort := baseSocksPort + i
+
+		if debug {
+			log.Printf("Initializing tunnel %d: %s (SOCKS port: %d)", i+1, tunnel.Name, socksPort)
+		}
+
+		ti, err := initTunnel(&tunnel, socksPort, debug)
+		if err != nil {
+			// Cleanup already created instances
+			for _, instance := range tunnelInstances {
+				instance.XrayInstance.Close()
+				if instance.cancelFunc != nil {
+					instance.cancelFunc()
+				}
+			}
+			return nil, fmt.Errorf("failed to initialize tunnel %d: %v", i+1, err)
+		}
+
+		tunnelInstances = append(tunnelInstances, ti)
+
+		log.Printf("Started tunnel [%s] → %s:%d [%s] on SOCKS port %d",
+			ti.Name, ti.VLESSConfig.Address, ti.VLESSConfig.Port, ti.VLESSConfig.Security, socksPort)
+	}
+
+	// Wait for all Xray instances to start
+	time.Sleep(5 * time.Second)
+
+	// Start checker goroutines for all tunnels
+	for _, ti := range tunnelInstances {
+		ctx, cancel := context.WithCancel(context.Background())
+		ti.cancelFunc = cancel
+		go runTunnelChecker(ctx, ti)
+	}
+
+	return tunnelInstances, nil
+}
+
+// stopTunnels gracefully stops all tunnel instances
+func stopTunnels(instances []*TunnelInstance) {
+	for _, ti := range instances {
+		if ti.cancelFunc != nil {
+			ti.cancelFunc()
+		}
+		if ti.XrayInstance != nil {
+			ti.XrayInstance.Close()
+		}
+	}
+}
+
+// reloadConfig gracefully reloads configuration
+func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
+	log.Printf("Reloading configuration from %s", configFile)
+
+	// Load new config
+	newConfig, err := loadConfig(configFile)
+	if err != nil {
+		log.Printf("Failed to load new config: %v", err)
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Initialize new tunnels
+	newInstances, err := initializeTunnels(newConfig, debug)
+	if err != nil {
+		log.Printf("Failed to initialize new tunnels: %v", err)
+		return fmt.Errorf("failed to initialize tunnels: %v", err)
+	}
+
+	// Replace old instances with new ones
+	tm.mu.Lock()
+	oldInstances := tm.instances
+	tm.instances = newInstances
+	tm.mu.Unlock()
+
+	// Stop old tunnels
+	log.Printf("Stopping old tunnel instances")
+	stopTunnels(oldInstances)
+
+	log.Printf("Configuration reloaded successfully with %d tunnels", len(newInstances))
+	return nil
+}
+
+// watchConfigFile watches for config file changes and triggers reload
+func watchConfigFile(tm *TunnelManager, configFile string, debug bool) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create file watcher: %v", err)
+	}
+	defer watcher.Close()
+
+	// Watch the config file
+	err = watcher.Add(configFile)
+	if err != nil {
+		return fmt.Errorf("failed to watch config file: %v", err)
+	}
+
+	log.Printf("Watching for config changes: %s", configFile)
+
+	// Debounce timer to avoid multiple reloads
+	var debounceTimer *time.Timer
+	debounceDuration := 1 * time.Second
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+
+			// Check if it's a write or create event
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+				log.Printf("Config file changed: %s", event.Name)
+
+				// Reset debounce timer
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+
+				debounceTimer = time.AfterFunc(debounceDuration, func() {
+					if err := tm.reloadConfig(configFile, debug); err != nil {
+						log.Printf("Failed to reload config: %v", err)
+					}
+				})
+			}
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			log.Printf("File watcher error: %v", err)
+		}
 	}
 }
 
@@ -607,42 +764,32 @@ func main() {
 		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
 	}
 
+	// Initialize tunnel manager
+	tunnelManager := &TunnelManager{}
+
 	// Initialize all tunnels
-	var tunnelInstances []*TunnelInstance
-	baseSocksPort := defaultSocksPort
-
-	for i, tunnel := range config.Tunnels {
-		socksPort := baseSocksPort + i
-
-		if debug {
-			log.Printf("Initializing tunnel %d: %s (SOCKS port: %d)", i+1, tunnel.Name, socksPort)
-		}
-
-		ti, err := initTunnel(&tunnel, socksPort, debug)
-		if err != nil {
-			log.Fatalf("Failed to initialize tunnel %d: %v", i+1, err)
-		}
-
-		tunnelInstances = append(tunnelInstances, ti)
-
-		log.Printf("Started tunnel [%s] → %s:%d [%s] on SOCKS port %d",
-			ti.Name, ti.VLESSConfig.Address, ti.VLESSConfig.Port, ti.VLESSConfig.Security, socksPort)
+	tunnelInstances, err := initializeTunnels(config, debug)
+	if err != nil {
+		log.Fatalf("Failed to initialize tunnels: %v", err)
 	}
+
+	tunnelManager.mu.Lock()
+	tunnelManager.instances = tunnelInstances
+	tunnelManager.mu.Unlock()
 
 	// Cleanup on exit
 	defer func() {
-		for _, ti := range tunnelInstances {
-			ti.XrayInstance.Close()
-		}
+		tunnelManager.mu.RLock()
+		stopTunnels(tunnelManager.instances)
+		tunnelManager.mu.RUnlock()
 	}()
 
-	// Wait for all Xray instances to start
-	time.Sleep(5 * time.Second)
-
-	// Start checker goroutine for each tunnel
-	for _, ti := range tunnelInstances {
-		go runTunnelChecker(ti)
-	}
+	// Start file watcher for automatic config reload
+	go func() {
+		if err := watchConfigFile(tunnelManager, configFile, debug); err != nil {
+			log.Printf("File watcher stopped: %v", err)
+		}
+	}()
 
 	// HTTP server for metrics
 	http.Handle("/metrics", promhttp.Handler())
@@ -652,5 +799,6 @@ func main() {
 	})
 
 	log.Printf("Metrics server listening on %s", listenAddr)
+	log.Printf("Config auto-reload enabled for: %s", configFile)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }

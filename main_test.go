@@ -542,3 +542,183 @@ func TestCheckTunnel(t *testing.T) {
 
 	// Тест завершен успешно, если не было паники
 }
+
+func TestTunnelManagerReloadConfig(t *testing.T) {
+	// Создаем временный конфиг
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	// Первая загрузка конфига
+	config, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+
+	// Проверяем что конфиг загрузился
+	if len(config.Tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel, got %d", len(config.Tunnels))
+	}
+
+	// Обновляем конфиг
+	newConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
+  - name: "tunnel2"
+    url: "vless://uuid2@example2.com:443?type=tcp&security=tls&sni=test2.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(newConfig), 0644); err != nil {
+		t.Fatalf("failed to update config: %v", err)
+	}
+
+	// Проверяем что новый конфиг имеет 2 туннеля
+	config2, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+
+	if len(config2.Tunnels) != 2 {
+		t.Errorf("expected 2 tunnels, got %d", len(config2.Tunnels))
+	}
+}
+
+func TestWatchConfigFile(t *testing.T) {
+	// Создаем временный конфиг
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	// Инициализируем менеджер
+	tm := &TunnelManager{}
+
+	// Запускаем watcher в горутине с таймаутом
+	done := make(chan bool)
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		// Watcher работает в бесконечном цикле, поэтому даём ему 2 секунды
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		go func() {
+			err := watchConfigFile(tm, configFile, false)
+			if err != nil {
+				watcherErr <- err
+			}
+		}()
+
+		<-ctx.Done()
+		done <- true
+	}()
+
+	// Ждем запуска watcher
+	time.Sleep(100 * time.Millisecond)
+
+	// Модифицируем файл
+	updatedConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1-modified"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(updatedConfig), 0644); err != nil {
+		t.Fatalf("failed to update config: %v", err)
+	}
+
+	// Ждем завершения или ошибки
+	select {
+	case <-done:
+		// Тест прошел успешно
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	}
+}
+
+func TestInitializeTunnels(t *testing.T) {
+	// Тест с пустым конфигом
+	t.Run("empty config", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{},
+		}
+
+		instances, err := initializeTunnels(config, false)
+		if err == nil {
+			t.Error("expected error for empty tunnels")
+		}
+		if instances != nil {
+			t.Error("expected nil instances for empty config")
+		}
+	})
+
+	// Тест с невалидным URL
+	t.Run("invalid tunnel URL", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "invalid",
+					URL:           "invalid-url",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+
+		instances, err := initializeTunnels(config, false)
+		if err == nil {
+			t.Error("expected error for invalid URL")
+		}
+		if instances != nil {
+			t.Error("expected nil instances for invalid config")
+		}
+	})
+}
+
+func TestStopTunnels(t *testing.T) {
+	// Создаем mock туннель
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ti := &TunnelInstance{
+		Name:       "test-tunnel",
+		cancelFunc: cancel,
+		VLESSConfig: &VLESSConfig{
+			Address:  "test.com",
+			Port:     443,
+			Security: "tls",
+		},
+		SocksPort: 1080,
+	}
+
+	instances := []*TunnelInstance{ti}
+
+	// Останавливаем туннели
+	stopTunnels(instances)
+
+	// Проверяем что контекст отменен
+	select {
+	case <-ctx.Done():
+		// Успешно отменен
+	case <-time.After(1 * time.Second):
+		t.Error("context was not cancelled")
+	}
+}

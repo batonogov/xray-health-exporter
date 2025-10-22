@@ -1,7 +1,14 @@
 name: Release
 
+# This workflow runs on:
+# - Pull requests: Tests build, docker build, and artifact download (no actual release/push)
+# - Push to main: Full release with docker push and GitHub release creation
+
 on:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
@@ -91,7 +98,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: |
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
@@ -108,12 +115,28 @@ jobs:
           VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Download all artifacts
+      - name: Download Linux AMD64 binary
         uses: actions/download-artifact@v5
         with:
-          path: artifacts
+          name: xray-health-exporter-linux-amd64
+          path: artifacts/xray-health-exporter-linux-amd64
+
+      - name: Download Linux ARM64 binary
+        uses: actions/download-artifact@v5
+        with:
+          name: xray-health-exporter-linux-arm64
+          path: artifacts/xray-health-exporter-linux-arm64
+
+      - name: Verify artifacts (PR check)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "✅ Artifacts downloaded successfully:"
+          ls -lh artifacts/*/xray-health-exporter-*
+          echo ""
+          echo "This is a PR - skipping actual release creation"
 
       - name: Create Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}

@@ -10,7 +10,10 @@ updates:
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      docker-dependencies:
+        patterns: ["*"]
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:

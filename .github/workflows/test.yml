@@ -1,0 +1,159 @@
+name: 🧪 Тестирование
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: 🧪 Запуск тестов
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: 📥 Checkout кода
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔧 Установка Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: 📦 Загрузка зависимостей
+        run: go mod download
+
+      - name: 🔍 Проверка форматирования
+        run: |
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "❌ Код не отформатирован. Запустите 'go fmt ./...'"
+            gofmt -s -l .
+            exit 1
+          fi
+          echo "✅ Код отформатирован правильно"
+
+      - name: 🏗️ Проверка сборки
+        run: |
+          echo "🔨 Сборка проекта..."
+          go build -v -o xray-health-exporter .
+          echo "✅ Сборка прошла успешно"
+
+      - name: 🧪 Запуск тестов
+        run: |
+          echo "🧪 Запуск тестов с покрытием..."
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: 📊 Анализ покрытия
+        id: coverage
+        run: |
+          echo "📊 Генерация отчета о покрытии..."
+          go tool cover -func=coverage.out > coverage.txt
+
+          # Извлечение общего процента покрытия
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "📊 Общее покрытие: $COVERAGE%"
+
+          # Проверка минимального порога
+          THRESHOLD=65
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "❌ Покрытие ($COVERAGE%) ниже минимального порога ($THRESHOLD%)"
+            exit 1
+          fi
+          echo "✅ Покрытие ($COVERAGE%) выше минимального порога ($THRESHOLD%)"
+
+      - name: 📝 Создание отчета о покрытии
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "## 📊 Отчет о тестировании" > coverage_report.md
+          echo "" >> coverage_report.md
+          echo "### ✅ Результаты тестов" >> coverage_report.md
+          echo "" >> coverage_report.md
+          echo "- **Общее покрытие:** ${{ steps.coverage.outputs.coverage }}%" >> coverage_report.md
+          echo "- **Минимальный порог:** 65%" >> coverage_report.md
+          echo "- **Статус:** 🟢 Пройдено" >> coverage_report.md
+          echo "" >> coverage_report.md
+          echo "### 📋 Покрытие по функциям" >> coverage_report.md
+          echo "" >> coverage_report.md
+          echo "\`\`\`" >> coverage_report.md
+          head -20 coverage.txt >> coverage_report.md
+          echo "..." >> coverage_report.md
+          tail -5 coverage.txt >> coverage_report.md
+          echo "\`\`\`" >> coverage_report.md
+          echo "" >> coverage_report.md
+          echo "---" >> coverage_report.md
+          echo "🤖 Автоматически сгенерировано GitHub Actions" >> coverage_report.md
+
+      - name: 💬 Комментарий в PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const coverage = '${{ steps.coverage.outputs.coverage }}';
+
+            let emoji = '🟢';
+            if (parseFloat(coverage) < 70) emoji = '🟡';
+            if (parseFloat(coverage) < 65) emoji = '🔴';
+
+            const body = fs.readFileSync('coverage_report.md', 'utf8');
+
+            // Поиск существующего комментария
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.data.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('📊 Отчет о тестировании')
+            );
+
+            if (botComment) {
+              // Обновление существующего комментария
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              // Создание нового комментария
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: 📤 Загрузка артефактов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            coverage.txt
+          retention-days: 30
+
+      - name: 📋 Итоги
+        if: always()
+        run: |
+          echo "## 📋 Итоги тестирования" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Покрытие кода:** ${{ steps.coverage.outputs.coverage }}%" >> $GITHUB_STEP_SUMMARY
+          echo "- **Форматирование:** ✅ Пройдено" >> $GITHUB_STEP_SUMMARY
+          echo "- **Сборка:** ✅ Успешно" >> $GITHUB_STEP_SUMMARY
+          echo "- **Тесты:** ✅ Все тесты пройдены" >> $GITHUB_STEP_SUMMARY

@@ -1,8 +1,8 @@
-name: Release
+name: Релиз
 
-# This workflow runs on:
-# - Pull requests: Tests build, docker build, and artifact download (no actual release/push)
-# - Push to main: Full release with docker push and GitHub release creation
+# Этот workflow запускается при:
+# - Pull requests: Тестирует сборку, docker build и загрузку артефактов (без фактического релиза/push)
+# - Push в main: Полный релиз с docker push и созданием GitHub релиза
 
 on:
   push:
@@ -32,15 +32,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Go
+      - name: Настройка Go
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
-      - name: Run tests
+      - name: Запуск тестов
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic
 
-      - name: Upload coverage
+      - name: Загрузка покрытия
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.txt
@@ -60,12 +60,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Go
+      - name: Настройка Go
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
-      - name: Build
+      - name: Сборка
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -73,7 +73,7 @@ jobs:
         run: |
           go build -ldflags="-s -w" -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
 
-      - name: Upload artifact
+      - name: Загрузка артефакта
         uses: actions/upload-artifact@v4
         with:
           name: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -88,23 +88,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Generate version
+      - name: Генерация версии
         id: version
         run: |
           VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Set up Docker Buildx
+      - name: Настройка Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Вход в GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Сборка и публикация
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -120,38 +120,38 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Generate version
+      - name: Генерация версии
         id: version
         run: |
           VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Download Linux AMD64 binary
+      - name: Скачивание Linux AMD64 бинарника
         uses: actions/download-artifact@v5
         with:
           name: xray-health-exporter-linux-amd64
           path: artifacts/xray-health-exporter-linux-amd64
 
-      - name: Download Linux ARM64 binary
+      - name: Скачивание Linux ARM64 бинарника
         uses: actions/download-artifact@v5
         with:
           name: xray-health-exporter-linux-arm64
           path: artifacts/xray-health-exporter-linux-arm64
 
-      - name: Verify artifacts (PR check)
+      - name: Проверка артефактов (для PR)
         if: github.event_name == 'pull_request'
         run: |
-          echo "✅ Artifacts downloaded successfully:"
+          echo "✅ Артефакты успешно загружены:"
           ls -lh artifacts/*/xray-health-exporter-*
           echo ""
-          echo "This is a PR - skipping actual release creation"
+          echo "Это PR - пропускаем создание фактического релиза"
 
-      - name: Create Release
+      - name: Создание релиза
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          name: Release ${{ steps.version.outputs.version }}
+          name: Релиз ${{ steps.version.outputs.version }}
           body: |
             ## Xray Health Exporter
 

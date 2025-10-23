@@ -1,4 +1,4 @@
-version: '3'
+version: "3"
 
 tasks:
   build:
@@ -15,6 +15,29 @@ tasks:
     desc: Запустить тесты с детектором гонок
     cmds:
       - go test -v -race ./...
+
+  test-coverage:
+    desc: Запустить тесты с покрытием и сгенерировать отчет
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+      - >
+        echo "📊 Для HTML отчета запустите: go tool cover -html=coverage.out"
+
+  coverage-html:
+    desc: Открыть HTML отчет о покрытии
+    deps: [test-coverage]
+    cmds:
+      - go tool cover -html=coverage.out
+
+  ci-test:
+    desc: Запустить тесты как в CI (с покрытием и race detector)
+    cmds:
+      - go fmt ./...
+      - go build -v -o xray-health-exporter .
+      - go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+      - go tool cover -func=coverage.out | tail -1
+      - echo "✅ Все проверки CI пройдены!"
 
   install-hooks:
     desc: Установить git pre-commit хуки

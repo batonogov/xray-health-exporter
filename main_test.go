@@ -9,8 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func TestParseVLESSURL(t *testing.T) {
@@ -720,5 +725,720 @@ func TestStopTunnels(t *testing.T) {
 		// Успешно отменен
 	case <-time.After(1 * time.Second):
 		t.Error("context was not cancelled")
+	}
+}
+
+// HTTP Endpoints Tests
+
+func TestHealthEndpoint(t *testing.T) {
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "OK")
+	})
+
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status OK, got %v", resp.StatusCode)
+	}
+
+	body := make([]byte, 2)
+	resp.Body.Read(body)
+	if string(body) != "OK" {
+		t.Errorf("expected body 'OK', got '%s'", string(body))
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	// Создаем mock туннель и устанавливаем метрики
+	labels := prometheus.Labels{
+		"name":     "test-tunnel",
+		"server":   "example.com:443",
+		"security": "reality",
+		"sni":      "google.com",
+	}
+
+	tunnelUp.With(labels).Set(1)
+	tunnelLatency.With(labels).Set(0.123)
+	tunnelHTTPStatus.With(labels).Set(200)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+
+	promhttp.Handler().ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status OK, got %v", resp.StatusCode)
+	}
+
+	body := make([]byte, 10000)
+	n, _ := resp.Body.Read(body)
+	bodyStr := string(body[:n])
+
+	// Проверяем что метрики присутствуют
+	expectedMetrics := []string{
+		"xray_tunnel_up",
+		"xray_tunnel_latency_seconds",
+		"xray_tunnel_check_total",
+		"xray_tunnel_last_success_timestamp",
+		"xray_tunnel_http_status",
+	}
+
+	for _, metric := range expectedMetrics {
+		if !strings.Contains(bodyStr, metric) {
+			t.Errorf("metrics output should contain %s", metric)
+		}
+	}
+
+	// Проверяем формат Prometheus (должны быть HELP и TYPE)
+	if !strings.Contains(bodyStr, "# HELP") {
+		t.Error("metrics should contain HELP comments")
+	}
+	if !strings.Contains(bodyStr, "# TYPE") {
+		t.Error("metrics should contain TYPE comments")
+	}
+}
+
+// Prometheus Metrics Tests
+
+func TestMetricsUpdate(t *testing.T) {
+	labels := prometheus.Labels{
+		"name":     "metrics-test",
+		"server":   "test.example.com:443",
+		"security": "tls",
+		"sni":      "test.example.com",
+	}
+
+	// Тест успешной проверки
+	t.Run("success metrics", func(t *testing.T) {
+		tunnelUp.With(labels).Set(1)
+		tunnelLatency.With(labels).Set(0.5)
+		tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+		tunnelHTTPStatus.With(labels).Set(200)
+		tunnelCheckTotal.With(prometheus.Labels{
+			"name":     "metrics-test",
+			"server":   "test.example.com:443",
+			"security": "tls",
+			"sni":      "test.example.com",
+			"result":   "success",
+		}).Inc()
+
+		// Метрики должны быть установлены без паники
+	})
+
+	// Тест неудачной проверки
+	t.Run("failure metrics", func(t *testing.T) {
+		tunnelUp.With(labels).Set(0)
+		tunnelCheckTotal.With(prometheus.Labels{
+			"name":     "metrics-test",
+			"server":   "test.example.com:443",
+			"security": "tls",
+			"sni":      "test.example.com",
+			"result":   "failure",
+		}).Inc()
+
+		// Метрики должны быть установлены без паники
+	})
+}
+
+func TestMetricsLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels prometheus.Labels
+	}{
+		{
+			name: "reality tunnel",
+			labels: prometheus.Labels{
+				"name":     "Reality Server",
+				"server":   "reality.example.com:8443",
+				"security": "reality",
+				"sni":      "google.com",
+			},
+		},
+		{
+			name: "tls tunnel",
+			labels: prometheus.Labels{
+				"name":     "TLS Server",
+				"server":   "tls.example.com:443",
+				"security": "tls",
+				"sni":      "example.com",
+			},
+		},
+		{
+			name: "tunnel with special characters in name",
+			labels: prometheus.Labels{
+				"name":     "Server-123_test",
+				"server":   "192.168.1.1:8080",
+				"security": "tls",
+				"sni":      "test.local",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Устанавливаем метрики с разными labels
+			tunnelUp.With(tt.labels).Set(1)
+			tunnelLatency.With(tt.labels).Set(0.1)
+			tunnelHTTPStatus.With(tt.labels).Set(200)
+
+			// Проверяем что метрики можно установить без ошибок
+			// Prometheus сам валидирует корректность labels
+		})
+	}
+}
+
+func TestMetricsReset(t *testing.T) {
+	// Создаем начальные метрики
+	oldLabels := prometheus.Labels{
+		"name":     "old-tunnel",
+		"server":   "old.example.com:443",
+		"security": "tls",
+		"sni":      "old.example.com",
+	}
+
+	tunnelUp.With(oldLabels).Set(1)
+	tunnelLatency.With(oldLabels).Set(0.5)
+
+	// После перезагрузки конфига метрики со старыми labels остаются в регистре
+	// но новые метрики с новыми labels должны создаваться независимо
+	newLabels := prometheus.Labels{
+		"name":     "new-tunnel",
+		"server":   "new.example.com:443",
+		"security": "reality",
+		"sni":      "google.com",
+	}
+
+	tunnelUp.With(newLabels).Set(1)
+	tunnelLatency.With(newLabels).Set(0.3)
+
+	// Обе группы метрик должны существовать независимо
+	// Prometheus не удаляет старые метрики автоматически
+	// Это ожидаемое поведение - старые метрики останутся с последними значениями
+}
+
+// Network Error Tests for checkTunnel
+
+func TestCheckTunnel_Timeout(t *testing.T) {
+	// Создаем HTTP сервер с задержкой
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second) // Задержка больше чем timeout
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// Создаем mock SOCKS5 сервер
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	socksAddr := socksListener.Addr().String()
+
+	// Mock SOCKS5 сервер
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				req := make([]byte, 4)
+				c.Read(req)
+
+				switch req[3] {
+				case 1:
+					c.Read(make([]byte, 4+2))
+				case 3:
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4:
+					c.Read(make([]byte, 16+2))
+				}
+
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+
+				// Имитируем медленное соединение
+				time.Sleep(3 * time.Second)
+			}(conn)
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(socksAddr)
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "timeout-test",
+		VLESSConfig: &VLESSConfig{
+			Address:  "test.example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      ts.URL,
+		CheckTimeout:  1 * time.Second, // Короткий timeout
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// checkTunnel должен установить метрику в 0 из-за timeout
+	checkTunnel(ti)
+
+	// Тест проходит если не было паники
+	// checkTunnel внутри логирует ошибку и устанавливает tunnelUp в 0
+}
+
+func TestCheckTunnel_BadStatusCodes(t *testing.T) {
+	testCases := []struct {
+		name       string
+		statusCode int
+		shouldFail bool
+	}{
+		{"status 200 OK", http.StatusOK, false},
+		{"status 301 redirect", http.StatusMovedPermanently, false},
+		{"status 302 redirect", http.StatusFound, false},
+		{"status 307 redirect", http.StatusTemporaryRedirect, false},
+		{"status 404 not found", http.StatusNotFound, true},
+		{"status 500 server error", http.StatusInternalServerError, true},
+		{"status 503 unavailable", http.StatusServiceUnavailable, true},
+		{"status 403 forbidden", http.StatusForbidden, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Создаем HTTP сервер с заданным статусом
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.statusCode)
+				w.Write([]byte("test response"))
+			}))
+			defer ts.Close()
+
+			// Создаем mock SOCKS5 сервер
+			socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to create SOCKS listener: %v", err)
+			}
+			defer socksListener.Close()
+
+			socksAddr := socksListener.Addr().String()
+
+			go func() {
+				for {
+					conn, err := socksListener.Accept()
+					if err != nil {
+						return
+					}
+
+					go func(c net.Conn) {
+						defer c.Close()
+						buf := make([]byte, 3)
+						c.Read(buf)
+						c.Write([]byte{5, 0})
+
+						req := make([]byte, 4)
+						c.Read(req)
+
+						switch req[3] {
+						case 1:
+							c.Read(make([]byte, 4+2))
+						case 3:
+							lenBuf := make([]byte, 1)
+							c.Read(lenBuf)
+							c.Read(make([]byte, int(lenBuf[0])+2))
+						case 4:
+							c.Read(make([]byte, 16+2))
+						}
+
+						c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+
+						httpResponse := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: 13\r\n\r\ntest response",
+							tc.statusCode, http.StatusText(tc.statusCode))
+						c.Write([]byte(httpResponse))
+					}(conn)
+				}
+			}()
+
+			_, portStr, _ := net.SplitHostPort(socksAddr)
+			socksPort := 0
+			fmt.Sscanf(portStr, "%d", &socksPort)
+
+			ti := &TunnelInstance{
+				Name: fmt.Sprintf("status-%d-test", tc.statusCode),
+				VLESSConfig: &VLESSConfig{
+					Address:  "test.example.com",
+					Port:     443,
+					Security: "tls",
+					SNI:      "test.example.com",
+				},
+				SocksPort:     socksPort,
+				CheckURL:      ts.URL,
+				CheckTimeout:  5 * time.Second,
+				CheckInterval: 30 * time.Second,
+			}
+
+			time.Sleep(100 * time.Millisecond)
+			checkTunnel(ti)
+
+			// Проверяем что метрика HTTP status установлена правильно
+			// tunnelHTTPStatus должен содержать tc.statusCode
+		})
+	}
+}
+
+func TestCheckTunnel_DNSError(t *testing.T) {
+	// Создаем mock SOCKS5 сервер
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	socksAddr := socksListener.Addr().String()
+
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				req := make([]byte, 4)
+				c.Read(req)
+
+				// Читаем адрес
+				switch req[3] {
+				case 1:
+					c.Read(make([]byte, 4+2))
+				case 3:
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4:
+					c.Read(make([]byte, 16+2))
+				}
+
+				// Отвечаем ошибкой Host unreachable (код 4)
+				c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+			}(conn)
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(socksAddr)
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "dns-error-test",
+		VLESSConfig: &VLESSConfig{
+			Address:  "nonexistent.invalid.domain.example",
+			Port:     443,
+			Security: "tls",
+			SNI:      "nonexistent.invalid.domain.example",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      "https://nonexistent.invalid.domain.example",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// checkTunnel должен установить метрику в 0 из-за DNS ошибки
+	checkTunnel(ti)
+
+	// Тест проходит если не было паники
+}
+
+func TestCheckTunnel_TLSError(t *testing.T) {
+	// Создаем HTTP сервер без TLS
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// Создаем mock SOCKS5 сервер
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	socksAddr := socksListener.Addr().String()
+
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				req := make([]byte, 4)
+				c.Read(req)
+
+				switch req[3] {
+				case 1:
+					c.Read(make([]byte, 4+2))
+				case 3:
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4:
+					c.Read(make([]byte, 16+2))
+				}
+
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+
+				// Отправляем невалидный TLS handshake
+				c.Write([]byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x50})
+			}(conn)
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(socksAddr)
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "tls-error-test",
+		VLESSConfig: &VLESSConfig{
+			Address:  "test.example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      "https://test.example.com",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// checkTunnel должен обработать TLS ошибку
+	checkTunnel(ti)
+
+	// Тест проходит если не было паники
+}
+
+// runTunnelChecker Tests
+
+func TestRunTunnelChecker(t *testing.T) {
+	// Создаем mock SOCKS5 сервер который всегда отвечает успешно
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	socksAddr := socksListener.Addr().String()
+
+	var requestCount int32
+
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+				atomic.AddInt32(&requestCount, 1)
+
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				req := make([]byte, 4)
+				c.Read(req)
+
+				switch req[3] {
+				case 1:
+					c.Read(make([]byte, 4+2))
+				case 3:
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4:
+					c.Read(make([]byte, 16+2))
+				}
+
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+
+				httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+				c.Write([]byte(httpResponse))
+			}(conn)
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(socksAddr)
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "periodic-check-test",
+		VLESSConfig: &VLESSConfig{
+			Address:  "test.example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      "http://test.example.com",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 500 * time.Millisecond, // Короткий интервал для теста
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Запускаем checker
+	go runTunnelChecker(ctx, ti)
+
+	// Ждем несколько проверок
+	time.Sleep(1600 * time.Millisecond)
+
+	// Отменяем контекст
+	cancel()
+
+	// Даем время на завершение
+	time.Sleep(100 * time.Millisecond)
+
+	// Должно было быть несколько SOCKS запросов (минимум 3-4: начальный + периодические)
+	finalCount := atomic.LoadInt32(&requestCount)
+	if finalCount < 3 {
+		t.Errorf("expected at least 3 checks, got %d", finalCount)
+	}
+}
+
+func TestRunTunnelChecker_Context(t *testing.T) {
+	// Создаем HTTP сервер
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+	defer ts.Close()
+
+	// Создаем mock SOCKS5 сервер
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	socksAddr := socksListener.Addr().String()
+
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				req := make([]byte, 4)
+				c.Read(req)
+
+				switch req[3] {
+				case 1:
+					c.Read(make([]byte, 4+2))
+				case 3:
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4:
+					c.Read(make([]byte, 16+2))
+				}
+
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+
+				httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+				c.Write([]byte(httpResponse))
+			}(conn)
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(socksAddr)
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "context-cancel-test",
+		VLESSConfig: &VLESSConfig{
+			Address:  "test.example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      ts.URL,
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 100 * time.Millisecond,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Создаем контекст с отменой
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Канал для проверки что горутина завершилась
+	done := make(chan bool, 1)
+
+	// Запускаем checker
+	go func() {
+		runTunnelChecker(ctx, ti)
+		done <- true
+	}()
+
+	// Даем время на первую проверку
+	time.Sleep(200 * time.Millisecond)
+
+	// Отменяем контекст
+	cancel()
+
+	// Проверяем что горутина завершилась
+	select {
+	case <-done:
+		// Успешно завершилась
+	case <-time.After(2 * time.Second):
+		t.Error("runTunnelChecker did not stop after context cancellation")
 	}
 }

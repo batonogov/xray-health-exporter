@@ -14,6 +14,7 @@ xray-health-exporter
 coverage.*
 *.coverprofile
 profile.cov
+coverage_report.md
 
 # Директории зависимостей
 # vendor/

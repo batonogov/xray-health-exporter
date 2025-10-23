@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -26,12 +27,13 @@ import (
 )
 
 const (
-	defaultListenAddr    = ":9090"
-	defaultCheckURL      = "https://www.google.com"
-	defaultTimeout       = 30 * time.Second
-	defaultSocksPort     = 1080
-	defaultCheckInterval = 30 * time.Second
-	defaultConfigFile    = "/app/config.yaml"
+	defaultListenAddr     = ":9090"
+	defaultCheckURL       = "https://www.google.com"
+	defaultTimeout        = 30 * time.Second
+	defaultSocksPort      = 1080
+	defaultCheckInterval  = 30 * time.Second
+	defaultConfigFile     = "/app/config.yaml"
+	defaultDownloadTestMB = 1 // 1 MB для теста скорости
 )
 
 var (
@@ -74,6 +76,22 @@ var (
 		},
 		[]string{"name", "server", "security", "sni"},
 	)
+
+	tunnelDownloadBytes = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "xray_tunnel_download_bytes_total",
+			Help: "Total bytes downloaded through tunnel",
+		},
+		[]string{"name", "server", "security", "sni"},
+	)
+
+	tunnelDownloadSpeed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "xray_tunnel_download_speed_bytes_per_second",
+			Help: "Download speed in bytes per second",
+		},
+		[]string{"name", "server", "security", "sni"},
+	)
 )
 
 func init() {
@@ -82,6 +100,8 @@ func init() {
 	prometheus.MustRegister(tunnelCheckTotal)
 	prometheus.MustRegister(tunnelLastSuccess)
 	prometheus.MustRegister(tunnelHTTPStatus)
+	prometheus.MustRegister(tunnelDownloadBytes)
+	prometheus.MustRegister(tunnelDownloadSpeed)
 }
 
 // Config structures
@@ -91,17 +111,19 @@ type Config struct {
 }
 
 type Defaults struct {
-	CheckURL      string `yaml:"check_url"`
-	CheckInterval string `yaml:"check_interval"`
-	CheckTimeout  string `yaml:"check_timeout"`
+	CheckURL       string `yaml:"check_url"`
+	CheckInterval  string `yaml:"check_interval"`
+	CheckTimeout   string `yaml:"check_timeout"`
+	DownloadTestMB int    `yaml:"download_test_mb"`
 }
 
 type Tunnel struct {
-	Name          string `yaml:"name"`
-	URL           string `yaml:"url"`
-	CheckURL      string `yaml:"check_url"`
-	CheckInterval string `yaml:"check_interval"`
-	CheckTimeout  string `yaml:"check_timeout"`
+	Name           string `yaml:"name"`
+	URL            string `yaml:"url"`
+	CheckURL       string `yaml:"check_url"`
+	CheckInterval  string `yaml:"check_interval"`
+	CheckTimeout   string `yaml:"check_timeout"`
+	DownloadTestMB int    `yaml:"download_test_mb"`
 }
 
 type VLESSConfig struct {
@@ -118,14 +140,15 @@ type VLESSConfig struct {
 }
 
 type TunnelInstance struct {
-	Name          string
-	VLESSConfig   *VLESSConfig
-	XrayInstance  *core.Instance
-	SocksPort     int
-	CheckURL      string
-	CheckInterval time.Duration
-	CheckTimeout  time.Duration
-	cancelFunc    context.CancelFunc
+	Name           string
+	VLESSConfig    *VLESSConfig
+	XrayInstance   *core.Instance
+	SocksPort      int
+	CheckURL       string
+	CheckInterval  time.Duration
+	CheckTimeout   time.Duration
+	DownloadTestMB int
+	cancelFunc     context.CancelFunc
 }
 
 // TunnelManager manages tunnel instances with thread-safe access
@@ -168,6 +191,9 @@ func loadConfig(configPath string) (*Config, error) {
 		if tunnel.CheckTimeout == "" {
 			tunnel.CheckTimeout = config.Defaults.CheckTimeout
 		}
+		if tunnel.DownloadTestMB == 0 {
+			tunnel.DownloadTestMB = config.Defaults.DownloadTestMB
+		}
 
 		// Set global defaults if not specified anywhere
 		if tunnel.CheckURL == "" {
@@ -178,6 +204,9 @@ func loadConfig(configPath string) (*Config, error) {
 		}
 		if tunnel.CheckTimeout == "" {
 			tunnel.CheckTimeout = defaultTimeout.String()
+		}
+		if tunnel.DownloadTestMB == 0 {
+			tunnel.DownloadTestMB = defaultDownloadTestMB
 		}
 	}
 
@@ -378,13 +407,14 @@ func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, err
 	}
 
 	return &TunnelInstance{
-		Name:          name,
-		VLESSConfig:   vlessConfig,
-		XrayInstance:  xrayInstance,
-		SocksPort:     socksPort,
-		CheckURL:      tunnel.CheckURL,
-		CheckInterval: checkInterval,
-		CheckTimeout:  checkTimeout,
+		Name:           name,
+		VLESSConfig:    vlessConfig,
+		XrayInstance:   xrayInstance,
+		SocksPort:      socksPort,
+		CheckURL:       tunnel.CheckURL,
+		CheckInterval:  checkInterval,
+		CheckTimeout:   checkTimeout,
+		DownloadTestMB: tunnel.DownloadTestMB,
 	}, nil
 }
 
@@ -562,15 +592,54 @@ func checkTunnel(ti *TunnelInstance) {
 		return
 	}
 
-	// Читаем немного тела ответа чтобы убедиться что соединение работает
-	buf := make([]byte, 1024)
-	resp.Body.Read(buf)
+	// Читаем тело ответа для измерения скорости скачивания
+	downloadStart := time.Now()
+	maxBytes := int64(ti.DownloadTestMB) * 1024 * 1024 // Конвертируем MB в байты
+
+	// Используем LimitReader чтобы не скачивать больше необходимого
+	limitedReader := io.LimitReader(resp.Body, maxBytes)
+	bytesRead, err := io.Copy(io.Discard, limitedReader)
+
+	if err != nil && err != io.EOF {
+		log.Printf("[%s] ✗ Failed to read response body: %v", ti.Name, err)
+		tunnelUp.With(labels).Set(0)
+		tunnelCheckTotal.With(prometheus.Labels{
+			"name":     ti.Name,
+			"server":   serverLabel,
+			"security": ti.VLESSConfig.Security,
+			"sni":      ti.VLESSConfig.SNI,
+			"result":   "failure",
+		}).Inc()
+		return
+	}
+
+	downloadDuration := time.Since(downloadStart)
+
+	// Вычисляем скорость скачивания (байты в секунду)
+	var downloadSpeed float64
+	if downloadDuration.Seconds() > 0 {
+		downloadSpeed = float64(bytesRead) / downloadDuration.Seconds()
+	}
 
 	duration := time.Since(start)
-	log.Printf("[%s] ✓ Tunnel UP [%v]", ti.Name, duration.Round(time.Millisecond))
+
+	// Форматируем для логов (конвертируем в MB и Мбит/с для читаемости)
+	downloadedMB := float64(bytesRead) / (1024 * 1024)
+	speedMbps := (downloadSpeed * 8) / (1024 * 1024)
+
+	log.Printf("[%s] ✓ Tunnel UP [%v] - Downloaded %.2f MB in %v (%.2f Mbps)",
+		ti.Name,
+		duration.Round(time.Millisecond),
+		downloadedMB,
+		downloadDuration.Round(time.Millisecond),
+		speedMbps)
+
+	// Обновляем метрики
 	tunnelUp.With(labels).Set(1)
 	tunnelLatency.With(labels).Set(duration.Seconds())
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+	tunnelDownloadBytes.With(labels).Add(float64(bytesRead))
+	tunnelDownloadSpeed.With(labels).Set(downloadSpeed)
 	tunnelCheckTotal.With(prometheus.Labels{
 		"name":     ti.Name,
 		"server":   serverLabel,

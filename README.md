@@ -43,6 +43,7 @@ defaults:
   check_url: "https://www.google.com"
   check_interval: "30s"
   check_timeout: "30s"
+  download_test_mb: 1
 
 tunnels:
   - name: "Server 1"
@@ -76,6 +77,8 @@ export CONFIG_FILE=./config.yaml
 - `xray_tunnel_check_total{name, server, security, sni, result}` - счётчик проверок
 - `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp последней успешной проверки
 - `xray_tunnel_http_status{name, server, security, sni}` - HTTP статус код при проверке
+- `xray_tunnel_download_bytes_total{name, server, security, sni}` - общее количество скачанных байт
+- `xray_tunnel_download_speed_bytes_per_second{name, server, security, sni}` - скорость скачивания в байтах/секунду
 
 **Пример метрик:**
 ```
@@ -84,6 +87,8 @@ xray_tunnel_latency_seconds{name="Server 1",server="example.com:443",security="r
 xray_tunnel_check_total{name="Server 1",server="example.com:443",security="reality",sni="google.com",result="success"} 42
 xray_tunnel_last_success_timestamp{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 1704117344
 xray_tunnel_http_status{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 200
+xray_tunnel_download_bytes_total{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 52428800
+xray_tunnel_download_speed_bytes_per_second{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 2621440
 ```
 
 > 💡 Label `name` содержит имя туннеля из конфига (или `host:port` если имя не указано). Labels позволяют мониторить несколько VLESS серверов одновременно
@@ -102,6 +107,7 @@ defaults:
   check_url: "https://www.google.com"
   check_interval: "30s"
   check_timeout: "30s"
+  download_test_mb: 1
 
 # Список туннелей для мониторинга
 tunnels:
@@ -118,6 +124,7 @@ tunnels:
     check_url: "https://1.1.1.1"
     check_interval: "60s"
     check_timeout: "45s"
+    download_test_mb: 5
 ```
 
 **Параметры туннеля:**
@@ -126,6 +133,7 @@ tunnels:
 - `check_url` (опционально) - URL для проверки доступности
 - `check_interval` (опционально) - интервал между проверками
 - `check_timeout` (опционально) - таймаут проверки
+- `download_test_mb` (опционально) - размер теста скорости скачивания в мегабайтах (по умолчанию 1 MB)
 
 **Примечания:**
 - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082...)
@@ -188,6 +196,16 @@ groups:
         annotations:
           summary: "{{ $labels.name }} давно не проверялся"
           description: "Туннель {{ $labels.name }} не проверялся успешно {{ $value }}s"
+
+      # Низкая скорость скачивания
+      - alert: XrayLowDownloadSpeed
+        expr: xray_tunnel_download_speed_bytes_per_second < 131072  # 1 Mbps в байтах/сек
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Низкая скорость на {{ $labels.name }}"
+          description: "Туннель {{ $labels.name }} имеет низкую скорость {{ $value | humanize }}B/s (порог: 1 Mbps)"
 ```
 
 ## Разработка

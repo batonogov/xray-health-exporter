@@ -251,6 +251,7 @@ func TestLoadConfig(t *testing.T) {
   check_url: "https://example.com"
   check_interval: "1m"
   check_timeout: "10s"
+  download_test_mb: 5
 tunnels:
   - name: "test-tunnel"
     url: "vless://uuid@example.com:443?type=tcp&security=reality&pbk=key&sni=test.com&fp=chrome"`,
@@ -265,20 +266,28 @@ tunnels:
 				if c.Tunnels[0].CheckURL != "https://example.com" {
 					t.Errorf("check_url = %v, want https://example.com", c.Tunnels[0].CheckURL)
 				}
+				if c.Tunnels[0].DownloadTestMB != 5 {
+					t.Errorf("download_test_mb = %v, want 5", c.Tunnels[0].DownloadTestMB)
+				}
 			},
 		},
 		{
 			name: "tunnel with custom check_url",
 			yaml: `defaults:
   check_url: "https://default.com"
+  download_test_mb: 2
 tunnels:
   - name: "custom"
     url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
-    check_url: "https://custom.com"`,
+    check_url: "https://custom.com"
+    download_test_mb: 10`,
 			wantErr: false,
 			checkFunc: func(t *testing.T, c *Config) {
 				if c.Tunnels[0].CheckURL != "https://custom.com" {
 					t.Errorf("check_url = %v, want https://custom.com", c.Tunnels[0].CheckURL)
+				}
+				if c.Tunnels[0].DownloadTestMB != 10 {
+					t.Errorf("download_test_mb = %v, want 10", c.Tunnels[0].DownloadTestMB)
 				}
 			},
 		},
@@ -294,6 +303,9 @@ tunnels:
 				}
 				if c.Tunnels[0].CheckInterval != defaultCheckInterval.String() {
 					t.Errorf("check_interval = %v, want %v", c.Tunnels[0].CheckInterval, defaultCheckInterval.String())
+				}
+				if c.Tunnels[0].DownloadTestMB != defaultDownloadTestMB {
+					t.Errorf("download_test_mb = %v, want %v", c.Tunnels[0].DownloadTestMB, defaultDownloadTestMB)
 				}
 			},
 		},
@@ -526,10 +538,11 @@ func TestCheckTunnel(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
-		SocksPort:     socksPort,
-		CheckURL:      ts.URL,
-		CheckTimeout:  5 * time.Second,
-		CheckInterval: 30 * time.Second,
+		SocksPort:      socksPort,
+		CheckURL:       ts.URL,
+		CheckTimeout:   5 * time.Second,
+		CheckInterval:  30 * time.Second,
+		DownloadTestMB: 1,
 	}
 
 	// Даем время серверу запуститься
@@ -675,11 +688,12 @@ func TestInitializeTunnels(t *testing.T) {
 		config := &Config{
 			Tunnels: []Tunnel{
 				{
-					Name:          "invalid",
-					URL:           "invalid-url",
-					CheckURL:      "https://example.com",
-					CheckInterval: "30s",
-					CheckTimeout:  "10s",
+					Name:           "invalid",
+					URL:            "invalid-url",
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					DownloadTestMB: 1,
 				},
 			},
 		}

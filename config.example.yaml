@@ -6,6 +6,7 @@ defaults:
   check_url: "https://www.google.com"
   check_interval: "30s"
   check_timeout: "30s"
+  download_test_mb: 1  # Размер теста скорости скачивания (в MB, по умолчанию 1 MB)
 
 # Список VLESS туннелей для мониторинга
 tunnels:
@@ -23,6 +24,7 @@ tunnels:
     url: "vless://your-uuid@example3.com:443?type=tcp&security=tls&sni=example3.com&fp=chrome"
     check_interval: "60s"
     check_timeout: "45s"
+    download_test_mb: 5  # Скачивать 5 MB для более точного измерения скорости
 
   # Туннель без имени (будет использоваться "host:port" в качестве имени)
   - url: "vless://your-uuid@example4.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome"
@@ -33,3 +35,5 @@ tunnels:
 # - Каждый туннель должен иметь валидный VLESS URL
 # - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082, ...)
 # - Формат duration: "30s", "1m", "1h30m" и т.д.
+# - download_test_mb определяет сколько MB будет скачано для измерения скорости
+#   (большее значение = более точное измерение, но больше трафика и времени)

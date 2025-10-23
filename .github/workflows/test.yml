@@ -86,9 +86,17 @@ jobs:
           echo "### 📋 Покрытие по функциям" >> coverage_report.md
           echo "" >> coverage_report.md
           echo "\`\`\`" >> coverage_report.md
-          head -20 coverage.txt >> coverage_report.md
-          echo "..." >> coverage_report.md
-          tail -5 coverage.txt >> coverage_report.md
+          # Проверяем количество строк в файле
+          LINES=$(wc -l < coverage.txt)
+          if [ "$LINES" -le 25 ]; then
+            # Если строк мало, показываем всё
+            cat coverage.txt >> coverage_report.md
+          else
+            # Если строк много, показываем первые 20 и последние 5 без пересечения
+            head -20 coverage.txt >> coverage_report.md
+            echo "..." >> coverage_report.md
+            tail -5 coverage.txt >> coverage_report.md
+          fi
           echo "\`\`\`" >> coverage_report.md
           echo "" >> coverage_report.md
           echo "---" >> coverage_report.md

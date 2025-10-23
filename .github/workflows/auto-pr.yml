@@ -1,0 +1,145 @@
+name: 🤖 Автоматический Pull Request
+
+on:
+  push:
+    branches:
+      - "*"
+      - "!main"
+
+jobs:
+  pull-request:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 📊 Анализ изменений
+        id: analyze
+        run: |
+          # Получение информации о ветке
+          BRANCH_NAME="${{ github.ref_name }}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+          # Получение количества коммитов
+          COMMIT_COUNT=$(git rev-list --count HEAD ^origin/main)
+          echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+
+          # Получение статистики файлов
+          FILES_CHANGED=$(git diff --name-only origin/main...HEAD | wc -l)
+          echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
+
+          # Получение статистики строк
+          STATS=$(git diff --shortstat origin/main...HEAD)
+          echo "stats=$STATS" >> $GITHUB_OUTPUT
+
+          # Получение списка измененных файлов (ограничение 20)
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | head -20 | sed 's/^/- `/' | sed 's/$/`/')
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Получение последних коммитов
+          COMMITS=$(git log --oneline origin/main...HEAD --format="- %s (%h)" | head -10)
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Получение информации об авторе
+          AUTHOR=$(git log -1 --format="%an")
+          echo "author=$AUTHOR" >> $GITHUB_OUTPUT
+
+      - name: 🔍 Проверка существующего PR
+        id: check_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh pr list --head ${{ github.ref_name }} --base main --json number --jq '.[0].number // empty')
+
+          if [ -n "$PR_NUMBER" ]; then
+            echo "✅ Найден существующий PR #$PR_NUMBER"
+            echo "exists=true" >> $GITHUB_OUTPUT
+            PR_URL=$(gh pr view $PR_NUMBER --json url -q .url)
+            echo "url=$PR_URL" >> $GITHUB_OUTPUT
+            echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ Существующий PR не найден"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🚀 Создание или обновление PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ steps.check_pr.outputs.exists }}" = "true" ]; then
+            echo "✅ PR уже существует, обновляю..."
+            PR_NUM="${{ steps.check_pr.outputs.number }}"
+
+            # Создание тела PR
+            echo "## 🔄 Автоматически созданный Pull Request" > pr_body.md
+            echo "" >> pr_body.md
+            echo "> **Ветка:** \`${{ steps.analyze.outputs.branch_name }}\`" >> pr_body.md
+            echo "> **Автор:** ${{ steps.analyze.outputs.author }}" >> pr_body.md
+            echo "" >> pr_body.md
+            echo "### 📊 Сводка изменений" >> pr_body.md
+            echo "- **Изменено файлов:** ${{ steps.analyze.outputs.files_changed }}" >> pr_body.md
+            echo "- **Коммитов:** ${{ steps.analyze.outputs.commit_count }}" >> pr_body.md
+            echo "- **Статистика:** ${{ steps.analyze.outputs.stats }}" >> pr_body.md
+            echo "" >> pr_body.md
+            echo "### 📝 Последние коммиты" >> pr_body.md
+            echo '${{ steps.analyze.outputs.commits }}' >> pr_body.md
+            echo "" >> pr_body.md
+            echo "### 📁 Измененные файлы" >> pr_body.md
+            echo "<details>" >> pr_body.md
+            echo "<summary>Нажмите, чтобы развернуть список измененных файлов</summary>" >> pr_body.md
+            echo "" >> pr_body.md
+            echo '${{ steps.analyze.outputs.changed_files }}' >> pr_body.md
+            echo "" >> pr_body.md
+            echo "</details>" >> pr_body.md
+            echo "" >> pr_body.md
+            echo "---" >> pr_body.md
+            echo "🤖 Автоматически обновлено GitHub Actions" >> pr_body.md
+
+            gh pr edit $PR_NUM --body-file pr_body.md
+          else
+            echo "🆕 Создаю новый PR..."
+
+            # Создание тела PR
+            echo "## 🔄 Автоматически созданный Pull Request" > pr_body.md
+            echo "" >> pr_body.md
+            echo "> **Ветка:** \`${{ steps.analyze.outputs.branch_name }}\`" >> pr_body.md
+            echo "> **Автор:** ${{ steps.analyze.outputs.author }}" >> pr_body.md
+            echo "" >> pr_body.md
+            echo "### 📊 Сводка изменений" >> pr_body.md
+            echo "- **Изменено файлов:** ${{ steps.analyze.outputs.files_changed }}" >> pr_body.md
+            echo "- **Коммитов:** ${{ steps.analyze.outputs.commit_count }}" >> pr_body.md
+            echo "- **Статистика:** ${{ steps.analyze.outputs.stats }}" >> pr_body.md
+            echo "" >> pr_body.md
+            echo "### 📝 Последние коммиты" >> pr_body.md
+            echo '${{ steps.analyze.outputs.commits }}' >> pr_body.md
+            echo "" >> pr_body.md
+            echo "### 📁 Измененные файлы" >> pr_body.md
+            echo "<details>" >> pr_body.md
+            echo "<summary>Нажмите, чтобы развернуть список измененных файлов</summary>" >> pr_body.md
+            echo "" >> pr_body.md
+            echo '${{ steps.analyze.outputs.changed_files }}' >> pr_body.md
+            echo "" >> pr_body.md
+            echo "</details>" >> pr_body.md
+            echo "" >> pr_body.md
+            echo "---" >> pr_body.md
+            echo "🤖 Автоматически создано GitHub Actions" >> pr_body.md
+
+            gh pr create \
+              --title "🚀 Авто PR: ${{ steps.analyze.outputs.branch_name }}" \
+              --body-file pr_body.md \
+              --base main \
+              --head ${{ github.ref_name }} || echo "⚠️ PR возможно уже существует"
+          fi
+
+      - name: 📢 Итоги
+        run: |
+          echo "## 📋 Итоги" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ветка:** ${{ steps.analyze.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Файлов:** ${{ steps.analyze.outputs.files_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Коммитов:** ${{ steps.analyze.outputs.commit_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Автор:** ${{ steps.analyze.outputs.author }}" >> $GITHUB_STEP_SUMMARY

@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25.3-alpine AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o xray-health-exporter .
 
 # Финальная стадия
-FROM alpine:latest
+FROM alpine:3.22.2
 
 RUN apk --no-cache add ca-certificates && \
     addgroup -g 1000 xray && \

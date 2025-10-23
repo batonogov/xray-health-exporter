@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -781,6 +782,14 @@ func TestMetricsEndpoint(t *testing.T) {
 	tunnelUp.With(labels).Set(1)
 	tunnelLatency.With(labels).Set(0.123)
 	tunnelHTTPStatus.With(labels).Set(200)
+	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+	tunnelCheckTotal.With(prometheus.Labels{
+		"name":     "test-tunnel",
+		"server":   "example.com:443",
+		"security": "reality",
+		"sni":      "google.com",
+		"result":   "success",
+	}).Inc()
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -794,9 +803,11 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Errorf("expected status OK, got %v", resp.StatusCode)
 	}
 
-	body := make([]byte, 10000)
-	n, _ := resp.Body.Read(body)
-	bodyStr := string(body[:n])
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	bodyStr := string(body)
 
 	// Проверяем что метрики присутствуют
 	expectedMetrics := []string{

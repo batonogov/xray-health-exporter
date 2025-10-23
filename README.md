@@ -44,10 +44,10 @@ docker pull ghcr.io/batonogov/xray-health-exporter:v2025.10.13-abc1234
 
 ```yaml
 defaults:
-  check_url: "https://www.google.com"
+  check_url: "https://speed.cloudflare.com/__down"
   check_interval: "30s"
   check_timeout: "30s"
-  download_test_mb: 1
+  download_test_mb: 10
 
 tunnels:
   - name: "Server 1"
@@ -108,10 +108,10 @@ xray_tunnel_download_speed_bytes_per_second{name="Server 1",server="example.com:
 ```yaml
 # Глобальные настройки по умолчанию (опционально)
 defaults:
-  check_url: "https://www.google.com"
+  check_url: "https://speed.cloudflare.com/__down"
   check_interval: "30s"
   check_timeout: "30s"
-  download_test_mb: 1
+  download_test_mb: 10
 
 # Список туннелей для мониторинга
 tunnels:
@@ -134,10 +134,10 @@ tunnels:
 **Параметры туннеля:**
 - `name` (опционально) - имя туннеля для логов. Если не указано, используется `host:port`
 - `url` (обязательно) - VLESS URL подключения
-- `check_url` (опционально) - URL для проверки доступности
+- `check_url` (опционально) - URL для проверки доступности (по умолчанию Cloudflare speed test)
 - `check_interval` (опционально) - интервал между проверками
 - `check_timeout` (опционально) - таймаут проверки
-- `download_test_mb` (опционально) - размер теста скорости скачивания в мегабайтах (по умолчанию 1 MB)
+- `download_test_mb` (опционально) - размер теста скорости скачивания в мегабайтах (по умолчанию 10 MB). Для Cloudflare speed test размер добавляется автоматически в URL как параметр `?bytes=`
 
 **Примечания:**
 - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082...)

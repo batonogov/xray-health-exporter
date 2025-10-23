@@ -3,10 +3,11 @@
 # Глобальные значения по умолчанию (опционально)
 # Эти значения будут использоваться для всех туннелей, если не переопределены
 defaults:
-  check_url: "https://www.google.com"
+  check_url: "https://speed.cloudflare.com/__down"
   check_interval: "30s"
   check_timeout: "30s"
-  download_test_mb: 1  # Размер теста скорости скачивания (в MB, по умолчанию 1 MB)
+  download_test_mb: 10  # Размер теста скорости скачивания (в MB, по умолчанию 10 MB)
+                        # Для Cloudflare speed test параметр ?bytes= добавляется автоматически
 
 # Список VLESS туннелей для мониторинга
 tunnels:

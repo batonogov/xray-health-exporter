@@ -28,12 +28,12 @@ import (
 
 const (
 	defaultListenAddr     = ":9090"
-	defaultCheckURL       = "https://www.google.com"
+	defaultCheckURL       = "https://speed.cloudflare.com/__down"
 	defaultTimeout        = 30 * time.Second
 	defaultSocksPort      = 1080
 	defaultCheckInterval  = 30 * time.Second
 	defaultConfigFile     = "/app/config.yaml"
-	defaultDownloadTestMB = 1 // 1 MB для теста скорости
+	defaultDownloadTestMB = 10 // 10 MB для теста скорости
 )
 
 var (
@@ -561,7 +561,14 @@ func checkTunnel(ti *TunnelInstance) {
 		},
 	}
 
-	resp, err := client.Get(ti.CheckURL)
+	// Формируем URL с динамическим размером для Cloudflare speed test
+	checkURL := ti.CheckURL
+	if strings.Contains(checkURL, "speed.cloudflare.com/__down") && !strings.Contains(checkURL, "bytes=") {
+		bytesToDownload := int64(ti.DownloadTestMB) * 1024 * 1024
+		checkURL = fmt.Sprintf("%s?bytes=%d", checkURL, bytesToDownload)
+	}
+
+	resp, err := client.Get(checkURL)
 	if err != nil {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)

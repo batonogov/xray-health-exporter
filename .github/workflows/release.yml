@@ -74,7 +74,7 @@ jobs:
           go build -ldflags="-s -w" -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       - name: Загрузка артефакта
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
           path: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -127,13 +127,13 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Скачивание Linux AMD64 бинарника
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: xray-health-exporter-linux-amd64
           path: artifacts/xray-health-exporter-linux-amd64
 
       - name: Скачивание Linux ARM64 бинарника
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: xray-health-exporter-linux-arm64
           path: artifacts/xray-health-exporter-linux-arm64

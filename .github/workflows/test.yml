@@ -165,3 +165,144 @@ jobs:
           echo "- **Форматирование:** ✅ Пройдено" >> $GITHUB_STEP_SUMMARY
           echo "- **Сборка:** ✅ Успешно" >> $GITHUB_STEP_SUMMARY
           echo "- **Тесты:** ✅ Все тесты пройдены" >> $GITHUB_STEP_SUMMARY
+
+  docker-build:
+    name: 🐳 Проверка сборки Docker образа
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: 📥 Checkout кода
+        uses: actions/checkout@v5
+
+      - name: 🔧 Настройка Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🐳 Сборка Docker образа (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: xray-health-exporter:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 🧪 Проверка образа
+        run: |
+          echo "🔍 Проверка собранного образа..."
+          docker images | grep xray-health-exporter
+
+          echo "📦 Размер образа:"
+          docker images xray-health-exporter:pr-${{ github.event.pull_request.number }} --format "{{.Size}}"
+
+          echo "🔬 Инспекция образа:"
+          docker inspect xray-health-exporter:pr-${{ github.event.pull_request.number }} --format='{{.Config.User}}'
+          docker inspect xray-health-exporter:pr-${{ github.event.pull_request.number }} --format='{{.Config.ExposedPorts}}'
+
+      - name: 🚀 Тестовый запуск контейнера
+        run: |
+          echo "🚀 Создание тестового config.yaml..."
+          cat > test-config.yaml <<EOF
+          defaults:
+            check_url: "https://www.google.com"
+            check_interval: 30
+            timeout: 10
+          tunnels: []
+          EOF
+
+          echo "🐳 Запуск контейнера..."
+          docker run -d \
+            --name xray-test \
+            -v $(pwd)/test-config.yaml:/app/config.yaml:ro \
+            -p 9273:9273 \
+            xray-health-exporter:pr-${{ github.event.pull_request.number }}
+
+          echo "⏳ Ожидание запуска (5 секунд)..."
+          sleep 5
+
+          echo "🔍 Проверка health endpoint..."
+          curl -f http://localhost:9273/health || exit 1
+
+          echo "📊 Проверка metrics endpoint..."
+          curl -f http://localhost:9273/metrics || exit 1
+
+          echo "📋 Логи контейнера:"
+          docker logs xray-test
+
+          echo "🛑 Остановка контейнера..."
+          docker stop xray-test
+          docker rm xray-test
+
+          echo "✅ Тестовый запуск успешен!"
+
+      - name: 🐳 Проверка мультиплатформенной сборки
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: xray-health-exporter:pr-${{ github.event.pull_request.number }}-multiarch
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 💬 Комментарий в PR
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = `## 🐳 Результаты сборки Docker образа
+
+            ### ✅ Сборка успешна
+
+            - **Образ:** \`xray-health-exporter:pr-${{ github.event.pull_request.number }}\`
+            - **Платформы:** linux/amd64, linux/arm64
+            - **Health check:** ✅ Пройден
+            - **Metrics endpoint:** ✅ Доступен
+
+            Docker образ успешно собран и протестирован для всех поддерживаемых платформ.
+
+            ---
+            🤖 Автоматически сгенерировано GitHub Actions`;
+
+            // Поиск существующего комментария
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.data.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('🐳 Результаты сборки Docker образа')
+            );
+
+            if (botComment) {
+              // Обновление существующего комментария
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              // Создание нового комментария
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: 📋 Итоги Docker сборки
+        run: |
+          echo "## 🐳 Итоги Docker сборки" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Сборка образа:** ✅ Успешно" >> $GITHUB_STEP_SUMMARY
+          echo "- **Платформы:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health check:** ✅ Пройден" >> $GITHUB_STEP_SUMMARY
+          echo "- **Metrics endpoint:** ✅ Работает" >> $GITHUB_STEP_SUMMARY

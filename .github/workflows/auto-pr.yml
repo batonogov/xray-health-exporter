@@ -9,6 +9,9 @@ on:
 jobs:
   pull-request:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
         with:

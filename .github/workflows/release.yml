@@ -191,7 +191,7 @@ jobs:
             docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
             docker run --rm \
               -v $(pwd)/config.yaml:/app/config.yaml:ro \
-              -p 9090:9090 \
+              -p 9273:9273 \
               ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
             ```
 

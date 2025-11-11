@@ -45,6 +45,26 @@ tasks:
       - pre-commit install
       - echo "✅ Pre-commit хуки установлены!"
 
+  update-deps:
+    desc: Обновить все Go зависимости до последних версий
+    cmds:
+      - go get -u ./...
+      - go mod tidy
+      - echo "✅ Зависимости обновлены!"
+
+  update-deps-minor:
+    desc: Обновить Go зависимости только в пределах минорных версий
+    cmds:
+      - go get -u=patch ./...
+      - go mod tidy
+      - echo "✅ Зависимости обновлены (только патчи)!"
+
+  tidy:
+    desc: Привести в порядок go.mod и go.sum
+    cmds:
+      - go mod tidy
+      - echo "✅ go.mod приведен в порядок!"
+
   clean:
     desc: Очистить артефакты сборки
     cmds:
@@ -69,4 +89,4 @@ tasks:
     desc: Запустить Docker контейнер
     deps: [docker-build]
     cmds:
-      - docker run --rm -v $(pwd)/config.yaml:/app/config.yaml:ro -p 9090:9090 xray-health-exporter
+      - docker run --rm -v $(pwd)/config.yaml:/app/config.yaml:ro -p 9273:9273 xray-health-exporter

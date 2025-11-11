@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	defaultListenAddr    = ":9090"
+	defaultListenAddr    = ":9273"
 	defaultCheckURL      = "https://www.google.com"
 	defaultTimeout       = 30 * time.Second
 	defaultSocksPort     = 1080

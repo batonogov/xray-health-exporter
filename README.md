@@ -31,12 +31,9 @@ chmod +x xray-health-exporter-linux-arm64
 ```bash
 # Скачать latest
 docker pull ghcr.io/batonogov/xray-health-exporter:latest
-
-# Или конкретную версию
-docker pull ghcr.io/batonogov/xray-health-exporter:v2025.10.13-abc1234
 ```
 
-> 🔒 Docker образ запускается от непривилегированного пользователя `xray` (UID 1000)
+> 🔒 Docker образ запускается от непривилегированного пользователя `xray` (UID 10001)
 
 ## Быстрый старт
 
@@ -63,7 +60,7 @@ tunnels:
 # Docker
 docker run --rm \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
-  -p 9090:9090 \
+  -p 9273:9273 \
   ghcr.io/batonogov/xray-health-exporter:latest
 
 # Локально (требуется Go 1.25+)
@@ -142,7 +139,7 @@ tunnels:
 | Переменная | По умолчанию | Описание |
 |-----------|--------------|----------|
 | `CONFIG_FILE` | `/app/config.yaml` | Путь к YAML конфигурации |
-| `LISTEN_ADDR` | `:9090` | Адрес HTTP сервера |
+| `LISTEN_ADDR` | `:9273` | Адрес HTTP сервера |
 | `XRAY_LOG_LEVEL` | `warning` | Уровень логов Xray |
 | `DEBUG` | `false` | Детальный вывод |
 
@@ -154,7 +151,7 @@ tunnels:
 scrape_configs:
   - job_name: 'xray-health'
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ['localhost:9273']
 ```
 
 Примеры алертов:

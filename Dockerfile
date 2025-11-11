@@ -16,8 +16,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o xray-health-expor
 FROM alpine:3.22.2
 
 RUN apk --no-cache add ca-certificates && \
-    addgroup -g 1000 xray && \
-    adduser -D -u 1000 -G xray xray
+    addgroup -g 10001 xray && \
+    adduser -D -u 10001 -G xray xray
 
 WORKDIR /app
 
@@ -27,6 +27,6 @@ RUN chown -R xray:xray /app
 
 USER xray
 
-EXPOSE 9090
+EXPOSE 9273
 
 CMD ["./xray-health-exporter"]

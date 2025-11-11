@@ -27,7 +27,7 @@ jobs:
       - name: 🔧 Установка Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: "1.25"
           cache: true
 
       - name: 📦 Загрузка зависимостей

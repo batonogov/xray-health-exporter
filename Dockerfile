@@ -10,7 +10,7 @@ RUN go mod download
 COPY . .
 
 # Сборка
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o xray-health-exporter .
+RUN CGO_ENABLED=0 GOOS=linux go build -o xray-health-exporter .
 
 # Финальная стадия
 FROM alpine:3.22.2

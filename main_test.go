@@ -1629,3 +1629,472 @@ func metricLabelsMatch(metric *dto.Metric, labels prometheus.Labels) bool {
 
 	return true
 }
+
+// Additional tests for DialContext error paths
+
+func TestSOCKS5DialContext_HandshakeErrors(t *testing.T) {
+	t.Run("invalid socks version in response", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// Read handshake
+			buf := make([]byte, 3)
+			conn.Read(buf)
+
+			// Respond with wrong version
+			conn.Write([]byte{4, 0})
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for invalid SOCKS version")
+		}
+	})
+
+	t.Run("write error during handshake", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			// Close immediately to cause write error
+			conn.Close()
+		}()
+
+		time.Sleep(100 * time.Millisecond)
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for closed connection")
+		}
+	})
+
+	t.Run("read error during handshake", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// Read handshake but don't respond
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			// Close without responding
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 1*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for incomplete handshake")
+		}
+	})
+
+	t.Run("connect failure", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// SOCKS5 handshake
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			conn.Write([]byte{5, 0})
+
+			// Read CONNECT request
+			req := make([]byte, 4)
+			conn.Read(req)
+
+			// Read address
+			switch req[3] {
+			case 1:
+				conn.Read(make([]byte, 4+2))
+			case 3:
+				lenBuf := make([]byte, 1)
+				conn.Read(lenBuf)
+				conn.Read(make([]byte, int(lenBuf[0])+2))
+			case 4:
+				conn.Read(make([]byte, 16+2))
+			}
+
+			// Respond with connection refused
+			conn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for connection refused")
+		}
+	})
+
+	t.Run("IPv4 address response", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			conn.Write([]byte{5, 0})
+
+			req := make([]byte, 4)
+			conn.Read(req)
+
+			switch req[3] {
+			case 1:
+				conn.Read(make([]byte, 4+2))
+			case 3:
+				lenBuf := make([]byte, 1)
+				conn.Read(lenBuf)
+				conn.Read(make([]byte, int(lenBuf[0])+2))
+			case 4:
+				conn.Read(make([]byte, 16+2))
+			}
+
+			// Response with IPv4 address type
+			response := []byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 80}
+			conn.Write(response)
+			time.Sleep(100 * time.Millisecond)
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		conn, err := dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err != nil {
+			t.Fatalf("DialContext() error = %v", err)
+		}
+		defer conn.Close()
+	})
+
+	t.Run("IPv6 address response", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			conn.Write([]byte{5, 0})
+
+			req := make([]byte, 4)
+			conn.Read(req)
+
+			switch req[3] {
+			case 1:
+				conn.Read(make([]byte, 4+2))
+			case 3:
+				lenBuf := make([]byte, 1)
+				conn.Read(lenBuf)
+				conn.Read(make([]byte, int(lenBuf[0])+2))
+			case 4:
+				conn.Read(make([]byte, 16+2))
+			}
+
+			// Response with IPv6 address type (4)
+			response := []byte{5, 0, 0, 4}
+			response = append(response, make([]byte, 16)...) // IPv6 address
+			response = append(response, 0, 80)               // Port
+			conn.Write(response)
+			time.Sleep(100 * time.Millisecond)
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		conn, err := dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err != nil {
+			t.Fatalf("DialContext() error = %v", err)
+		}
+		defer conn.Close()
+	})
+}
+
+// Additional tests for initTunnel error cases
+
+func TestInitTunnel_InvalidDurations(t *testing.T) {
+	t.Run("invalid check_interval", func(t *testing.T) {
+		tunnel := &Tunnel{
+			Name:          "test",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "invalid-duration",
+			CheckTimeout:  "10s",
+		}
+
+		_, err := initTunnel(tunnel, 1080, false)
+		if err == nil {
+			t.Error("expected error for invalid check_interval")
+		}
+		if !strings.Contains(err.Error(), "invalid check_interval") {
+			t.Errorf("expected error message about check_interval, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_timeout", func(t *testing.T) {
+		tunnel := &Tunnel{
+			Name:          "test",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "not-a-duration",
+		}
+
+		_, err := initTunnel(tunnel, 1080, false)
+		if err == nil {
+			t.Error("expected error for invalid check_timeout")
+		}
+		if !strings.Contains(err.Error(), "invalid check_timeout") {
+			t.Errorf("expected error message about check_timeout, got: %v", err)
+		}
+	})
+}
+
+// Additional tests for startXray error handling
+
+func TestStartXray_InvalidConfig(t *testing.T) {
+	t.Run("invalid JSON", func(t *testing.T) {
+		invalidJSON := []byte(`{invalid json}`)
+		_, err := startXray(invalidJSON)
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+		if !strings.Contains(err.Error(), "failed to parse config") {
+			t.Errorf("expected parse error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid config structure", func(t *testing.T) {
+		// Valid JSON but invalid xray config structure
+		invalidConfig := []byte(`{
+			"inbounds": [
+				{
+					"port": "invalid-port-type",
+					"protocol": "socks"
+				}
+			]
+		}`)
+		_, err := startXray(invalidConfig)
+		if err == nil {
+			t.Error("expected error for invalid config structure")
+		}
+	})
+}
+
+// Additional tests for watchConfigFile scenarios
+
+func TestWatchConfigFile_FileRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+			watcherErr <- err
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Remove the file
+	if err := os.Remove(configFile); err != nil {
+		t.Fatalf("failed to remove config: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Recreate the file
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to recreate config: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Test completed
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestWatchConfigFile_FileRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	renamedFile := filepath.Join(tmpDir, "config.yaml.old")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+			watcherErr <- err
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Rename the file
+	if err := os.Rename(configFile, renamedFile); err != nil {
+		t.Fatalf("failed to rename config: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Recreate the file with the original name
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to recreate config: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Test completed
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestWatchConfigFile_ChmodEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+			watcherErr <- err
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Change file permissions (triggers chmod event)
+	if err := os.Chmod(configFile, 0600); err != nil {
+		t.Fatalf("failed to chmod config: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Test completed
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
+	}
+}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func TestParseVLESSURL(t *testing.T) {
@@ -617,23 +618,17 @@ tunnels:
 	tm := &TunnelManager{}
 
 	// Запускаем watcher в горутине с таймаутом
-	done := make(chan bool)
+	done := make(chan struct{})
 	watcherErr := make(chan error, 1)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	go func() {
-		// Watcher работает в бесконечном цикле, поэтому даём ему 2 секунды
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		go func() {
-			err := watchConfigFile(tm, configFile, false)
-			if err != nil {
-				watcherErr <- err
-			}
-		}()
-
-		<-ctx.Done()
-		done <- true
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, false); err != nil {
+			watcherErr <- err
+		}
 	}()
 
 	// Ждем запуска watcher
@@ -653,9 +648,155 @@ tunnels:
 	// Ждем завершения или ошибки
 	select {
 	case <-done:
-		// Тест прошел успешно
+		// Тест прошел успешно после окончания контекста
 	case err := <-watcherErr:
 		t.Fatalf("watcher error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestTunnelMetricLabels(t *testing.T) {
+	ti := &TunnelInstance{
+		Name: "metrics-test",
+		VLESSConfig: &VLESSConfig{
+			Address:  "example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "example.com",
+		},
+	}
+
+	want := []string{"metrics-test", "example.com:443", "tls", "example.com"}
+	got := tunnelMetricLabels(ti)
+
+	if len(got) != len(want) {
+		t.Fatalf("labels length = %d, want %d", len(got), len(want))
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("label[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCleanupRemovedTunnelMetrics(t *testing.T) {
+	resetAllMetrics := func() {
+		tunnelUp.Reset()
+		tunnelLatency.Reset()
+		tunnelLastSuccess.Reset()
+		tunnelHTTPStatus.Reset()
+		tunnelCheckTotal.Reset()
+	}
+
+	resetAllMetrics()
+	defer resetAllMetrics()
+
+	removed := &TunnelInstance{
+		Name: "removed",
+		VLESSConfig: &VLESSConfig{
+			Address:  "removed.example.com",
+			Port:     1443,
+			Security: "reality",
+			SNI:      "google.com",
+		},
+	}
+
+	kept := &TunnelInstance{
+		Name: "kept",
+		VLESSConfig: &VLESSConfig{
+			Address:  "kept.example.com",
+			Port:     2443,
+			Security: "tls",
+			SNI:      "kept.example.com",
+		},
+	}
+
+	newInstance := &TunnelInstance{
+		Name: "new",
+		VLESSConfig: &VLESSConfig{
+			Address:  "new.example.com",
+			Port:     3443,
+			Security: "tls",
+			SNI:      "new.example.com",
+		},
+	}
+
+	populateMetrics := func(ti *TunnelInstance) {
+		labelVals := prometheus.Labels{
+			"name":     ti.Name,
+			"server":   fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port),
+			"security": ti.VLESSConfig.Security,
+			"sni":      ti.VLESSConfig.SNI,
+		}
+		tunnelUp.With(labelVals).Set(1)
+		tunnelLatency.With(labelVals).Set(0.2)
+		tunnelLastSuccess.With(labelVals).Set(float64(time.Now().Unix()))
+		tunnelHTTPStatus.With(labelVals).Set(200)
+
+		successLabels := prometheus.Labels{
+			"name":     labelVals["name"],
+			"server":   labelVals["server"],
+			"security": labelVals["security"],
+			"sni":      labelVals["sni"],
+			"result":   "success",
+		}
+		failLabels := prometheus.Labels{
+			"name":     labelVals["name"],
+			"server":   labelVals["server"],
+			"security": labelVals["security"],
+			"sni":      labelVals["sni"],
+			"result":   "failure",
+		}
+		tunnelCheckTotal.With(successLabels).Inc()
+		tunnelCheckTotal.With(failLabels).Inc()
+	}
+
+	populateMetrics(removed)
+	populateMetrics(kept)
+	populateMetrics(newInstance)
+
+	cleanupRemovedTunnelMetrics([]*TunnelInstance{removed, kept}, []*TunnelInstance{kept, newInstance})
+
+	if metricExistsWithLabels(t, "xray_tunnel_up", prometheus.Labels{
+		"name":     "removed",
+		"server":   "removed.example.com:1443",
+		"security": "reality",
+		"sni":      "google.com",
+	}) {
+		t.Errorf("expected metrics for removed tunnel to be deleted")
+	}
+
+	if !metricExistsWithLabels(t, "xray_tunnel_up", prometheus.Labels{
+		"name":     "kept",
+		"server":   "kept.example.com:2443",
+		"security": "tls",
+		"sni":      "kept.example.com",
+	}) {
+		t.Errorf("expected metrics for kept tunnel to remain")
+	}
+
+	for _, result := range []string{"success", "failure"} {
+		if metricExistsWithLabels(t, "xray_tunnel_check_total", prometheus.Labels{
+			"name":     "removed",
+			"server":   "removed.example.com:1443",
+			"security": "reality",
+			"sni":      "google.com",
+			"result":   result,
+		}) {
+			t.Errorf("expected counter metric (%s) for removed tunnel to be deleted", result)
+		}
+	}
+
+	if !metricExistsWithLabels(t, "xray_tunnel_check_total", prometheus.Labels{
+		"name":     "kept",
+		"server":   "kept.example.com:2443",
+		"security": "tls",
+		"sni":      "kept.example.com",
+		"result":   "success",
+	}) {
+		t.Errorf("expected counter metric for kept tunnel to remain")
 	}
 }
 
@@ -767,6 +908,16 @@ func TestMetricsEndpoint(t *testing.T) {
 	tunnelUp.With(labels).Set(1)
 	tunnelLatency.With(labels).Set(0.123)
 	tunnelHTTPStatus.With(labels).Set(200)
+	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+
+	checkLabels := prometheus.Labels{
+		"name":     labels["name"],
+		"server":   labels["server"],
+		"security": labels["security"],
+		"sni":      labels["sni"],
+		"result":   "success",
+	}
+	tunnelCheckTotal.With(checkLabels).Inc()
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -1440,5 +1591,510 @@ func TestRunTunnelChecker_Context(t *testing.T) {
 		// Успешно завершилась
 	case <-time.After(2 * time.Second):
 		t.Error("runTunnelChecker did not stop after context cancellation")
+	}
+}
+
+func metricExistsWithLabels(t *testing.T, metricName string, labels prometheus.Labels) bool {
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	for _, mf := range mfs {
+		if mf.GetName() != metricName {
+			continue
+		}
+
+		for _, metric := range mf.GetMetric() {
+			if metricLabelsMatch(metric, labels) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func metricLabelsMatch(metric *dto.Metric, labels prometheus.Labels) bool {
+	if len(metric.GetLabel()) != len(labels) {
+		return false
+	}
+
+	for _, lp := range metric.GetLabel() {
+		val, ok := labels[lp.GetName()]
+		if !ok || val != lp.GetValue() {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Additional tests for DialContext error paths
+
+func TestSOCKS5DialContext_HandshakeErrors(t *testing.T) {
+	t.Run("invalid socks version in response", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// Read handshake
+			buf := make([]byte, 3)
+			conn.Read(buf)
+
+			// Respond with wrong version
+			conn.Write([]byte{4, 0})
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for invalid SOCKS version")
+		}
+	})
+
+	t.Run("write error during handshake", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			// Close immediately to cause write error
+			conn.Close()
+		}()
+
+		time.Sleep(100 * time.Millisecond)
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for closed connection")
+		}
+	})
+
+	t.Run("read error during handshake", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// Read handshake but don't respond
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			// Close without responding
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 1*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for incomplete handshake")
+		}
+	})
+
+	t.Run("connect failure", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// SOCKS5 handshake
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			conn.Write([]byte{5, 0})
+
+			// Read CONNECT request
+			req := make([]byte, 4)
+			conn.Read(req)
+
+			// Read address
+			switch req[3] {
+			case 1:
+				conn.Read(make([]byte, 4+2))
+			case 3:
+				lenBuf := make([]byte, 1)
+				conn.Read(lenBuf)
+				conn.Read(make([]byte, int(lenBuf[0])+2))
+			case 4:
+				conn.Read(make([]byte, 16+2))
+			}
+
+			// Respond with connection refused
+			conn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err == nil {
+			t.Error("expected error for connection refused")
+		}
+	})
+
+	t.Run("IPv4 address response", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			conn.Write([]byte{5, 0})
+
+			req := make([]byte, 4)
+			conn.Read(req)
+
+			switch req[3] {
+			case 1:
+				conn.Read(make([]byte, 4+2))
+			case 3:
+				lenBuf := make([]byte, 1)
+				conn.Read(lenBuf)
+				conn.Read(make([]byte, int(lenBuf[0])+2))
+			case 4:
+				conn.Read(make([]byte, 16+2))
+			}
+
+			// Response with IPv4 address type
+			response := []byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 80}
+			conn.Write(response)
+			time.Sleep(100 * time.Millisecond)
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		conn, err := dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err != nil {
+			t.Fatalf("DialContext() error = %v", err)
+		}
+		defer conn.Close()
+	})
+
+	t.Run("IPv6 address response", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		socksAddr := listener.Addr().String()
+
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			buf := make([]byte, 3)
+			conn.Read(buf)
+			conn.Write([]byte{5, 0})
+
+			req := make([]byte, 4)
+			conn.Read(req)
+
+			switch req[3] {
+			case 1:
+				conn.Read(make([]byte, 4+2))
+			case 3:
+				lenBuf := make([]byte, 1)
+				conn.Read(lenBuf)
+				conn.Read(make([]byte, int(lenBuf[0])+2))
+			case 4:
+				conn.Read(make([]byte, 16+2))
+			}
+
+			// Response with IPv6 address type (4)
+			response := []byte{5, 0, 0, 4}
+			response = append(response, make([]byte, 16)...) // IPv6 address
+			response = append(response, 0, 80)               // Port
+			conn.Write(response)
+			time.Sleep(100 * time.Millisecond)
+		}()
+
+		dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
+		ctx := context.Background()
+		conn, err := dialer.DialContext(ctx, "tcp", "example.com:80")
+		if err != nil {
+			t.Fatalf("DialContext() error = %v", err)
+		}
+		defer conn.Close()
+	})
+}
+
+// Additional tests for initTunnel error cases
+
+func TestInitTunnel_InvalidDurations(t *testing.T) {
+	t.Run("invalid check_interval", func(t *testing.T) {
+		tunnel := &Tunnel{
+			Name:          "test",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "invalid-duration",
+			CheckTimeout:  "10s",
+		}
+
+		_, err := initTunnel(tunnel, 1080, false)
+		if err == nil {
+			t.Error("expected error for invalid check_interval")
+		}
+		if !strings.Contains(err.Error(), "invalid check_interval") {
+			t.Errorf("expected error message about check_interval, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_timeout", func(t *testing.T) {
+		tunnel := &Tunnel{
+			Name:          "test",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "not-a-duration",
+		}
+
+		_, err := initTunnel(tunnel, 1080, false)
+		if err == nil {
+			t.Error("expected error for invalid check_timeout")
+		}
+		if !strings.Contains(err.Error(), "invalid check_timeout") {
+			t.Errorf("expected error message about check_timeout, got: %v", err)
+		}
+	})
+}
+
+// Additional tests for startXray error handling
+
+func TestStartXray_InvalidConfig(t *testing.T) {
+	t.Run("invalid JSON", func(t *testing.T) {
+		invalidJSON := []byte(`{invalid json}`)
+		_, err := startXray(invalidJSON)
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+		if !strings.Contains(err.Error(), "failed to parse config") {
+			t.Errorf("expected parse error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid config structure", func(t *testing.T) {
+		// Valid JSON but invalid xray config structure
+		invalidConfig := []byte(`{
+			"inbounds": [
+				{
+					"port": "invalid-port-type",
+					"protocol": "socks"
+				}
+			]
+		}`)
+		_, err := startXray(invalidConfig)
+		if err == nil {
+			t.Error("expected error for invalid config structure")
+		}
+	})
+}
+
+// Additional tests for watchConfigFile scenarios
+
+func TestWatchConfigFile_FileRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+			watcherErr <- err
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Remove the file
+	if err := os.Remove(configFile); err != nil {
+		t.Fatalf("failed to remove config: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Recreate the file
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to recreate config: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Test completed
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestWatchConfigFile_FileRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	renamedFile := filepath.Join(tmpDir, "config.yaml.old")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+			watcherErr <- err
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Rename the file
+	if err := os.Rename(configFile, renamedFile); err != nil {
+		t.Fatalf("failed to rename config: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Recreate the file with the original name
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to recreate config: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Test completed
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestWatchConfigFile_ChmodEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	initialConfig := `defaults:
+  check_url: "https://example.com"
+tunnels:
+  - name: "tunnel1"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+	if err := os.WriteFile(configFile, []byte(initialConfig), 0644); err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	watcherErr := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+			watcherErr <- err
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Change file permissions (triggers chmod event)
+	if err := os.Chmod(configFile, 0600); err != nil {
+		t.Fatalf("failed to chmod config: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Test completed
+	case err := <-watcherErr:
+		t.Fatalf("watcher error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher did not exit after timeout")
 	}
 }

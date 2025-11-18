@@ -21,9 +21,7 @@ RUN apk --no-cache add ca-certificates && \
 
 WORKDIR /app
 
-COPY --from=builder /app/xray-health-exporter .
-
-RUN chown -R xray:xray /app
+COPY --from=builder --chown=xray:xray /app/xray-health-exporter .
 
 USER xray
 

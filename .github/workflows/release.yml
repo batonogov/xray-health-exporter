@@ -56,6 +56,8 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: arm64
+          - goos: linux
+            goarch: arm
 
     steps:
       - uses: actions/checkout@v5
@@ -69,6 +71,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarch == 'arm' && '7' || '' }}
           CGO_ENABLED: 0
         run: |
           go build -ldflags="-s -w" -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
@@ -108,7 +111,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'latest' }}
@@ -140,6 +143,12 @@ jobs:
           name: xray-health-exporter-linux-arm64
           path: artifacts/xray-health-exporter-linux-arm64
 
+      - name: Скачивание Linux ARM бинарника
+        uses: actions/download-artifact@v6
+        with:
+          name: xray-health-exporter-linux-arm
+          path: artifacts/xray-health-exporter-linux-arm
+
       - name: Проверка артефактов (для PR)
         if: github.event_name == 'pull_request'
         run: |
@@ -164,6 +173,7 @@ jobs:
             **Бинарники:**
             - **Linux x64**: `xray-health-exporter-linux-amd64`
             - **Linux ARM64**: `xray-health-exporter-linux-arm64`
+            - **Linux ARM (32-bit)**: `xray-health-exporter-linux-arm`
 
             ```bash
             # Скачайте и сделайте исполняемым

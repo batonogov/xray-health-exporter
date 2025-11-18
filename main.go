@@ -4,15 +4,19 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -656,6 +660,43 @@ func stopTunnels(instances []*TunnelInstance) {
 	}
 }
 
+func tunnelMetricLabels(ti *TunnelInstance) []string {
+	serverLabel := fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port)
+	return []string{
+		ti.Name,
+		serverLabel,
+		ti.VLESSConfig.Security,
+		ti.VLESSConfig.SNI,
+	}
+}
+
+func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
+	if len(oldInstances) == 0 {
+		return
+	}
+
+	newKeys := make(map[string]struct{}, len(newInstances))
+	for _, ti := range newInstances {
+		key := strings.Join(tunnelMetricLabels(ti), "|")
+		newKeys[key] = struct{}{}
+	}
+
+	for _, ti := range oldInstances {
+		key := strings.Join(tunnelMetricLabels(ti), "|")
+		if _, exists := newKeys[key]; exists {
+			continue
+		}
+
+		labels := tunnelMetricLabels(ti)
+		tunnelUp.DeleteLabelValues(labels...)
+		tunnelLatency.DeleteLabelValues(labels...)
+		tunnelLastSuccess.DeleteLabelValues(labels...)
+		tunnelHTTPStatus.DeleteLabelValues(labels...)
+		tunnelCheckTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], "success")
+		tunnelCheckTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], "failure")
+	}
+}
+
 // reloadConfig gracefully reloads configuration
 func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	log.Printf("Reloading configuration from %s", configFile)
@@ -680,6 +721,9 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	tm.instances = newInstances
 	tm.mu.Unlock()
 
+	// Cleanup metrics that belong to tunnels that no longer exist
+	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
+
 	// Stop old tunnels
 	log.Printf("Stopping old tunnel instances")
 	stopTunnels(oldInstances)
@@ -689,34 +733,126 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 }
 
 // watchConfigFile watches for config file changes and triggers reload
-func watchConfigFile(tm *TunnelManager, configFile string, debug bool) error {
+func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, debug bool) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create file watcher: %v", err)
 	}
 	defer watcher.Close()
 
-	// Watch the config file
-	err = watcher.Add(configFile)
+	absConfig, err := filepath.Abs(configFile)
 	if err != nil {
-		return fmt.Errorf("failed to watch config file: %v", err)
+		return fmt.Errorf("failed to resolve config path: %v", err)
 	}
 
-	log.Printf("Watching for config changes: %s", configFile)
+	configDir := filepath.Dir(absConfig)
+	configName := filepath.Base(absConfig)
+
+	if err := watcher.Add(configDir); err != nil {
+		return fmt.Errorf("failed to watch config directory: %v", err)
+	}
+
+	var (
+		fileWatchActive bool
+		fileWatchMu     sync.Mutex
+	)
+
+	addFileWatch := func() {
+		fileWatchMu.Lock()
+		defer fileWatchMu.Unlock()
+
+		if fileWatchActive {
+			return
+		}
+
+		if _, err := os.Stat(absConfig); err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("Failed to stat config file %s: %v", absConfig, err)
+			}
+			return
+		}
+
+		if err := watcher.Add(absConfig); err != nil {
+			log.Printf("Failed to watch config file %s: %v", absConfig, err)
+			return
+		}
+
+		fileWatchActive = true
+		if debug {
+			log.Printf("Watching config file %s", absConfig)
+		}
+	}
+
+	removeFileWatch := func() {
+		fileWatchMu.Lock()
+		defer fileWatchMu.Unlock()
+
+		if !fileWatchActive {
+			return
+		}
+
+		if err := watcher.Remove(absConfig); err != nil && debug {
+			log.Printf("Failed to remove config file watch %s: %v", absConfig, err)
+		}
+		fileWatchActive = false
+	}
+
+	scheduleFileRewatch := func() {
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if _, err := os.Stat(absConfig); err == nil {
+						addFileWatch()
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	addFileWatch()
+
+	log.Printf("Watching for config changes: %s", absConfig)
 
 	// Debounce timer to avoid multiple reloads
 	var debounceTimer *time.Timer
 	debounceDuration := 1 * time.Second
+	defer func() {
+		if debounceTimer != nil {
+			debounceTimer.Stop()
+		}
+	}()
 
 	for {
 		select {
+		case <-ctx.Done():
+			return nil
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
 			}
 
+			if event.Name == "" || filepath.Base(event.Name) != configName {
+				continue
+			}
+
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				if debug {
+					log.Printf("Config file %s was removed or renamed", absConfig)
+				}
+				removeFileWatch()
+				scheduleFileRewatch()
+				continue
+			}
+
 			// Check if it's a write or create event
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Chmod) {
 				log.Printf("Config file changed: %s", event.Name)
 
 				// Reset debounce timer
@@ -725,7 +861,7 @@ func watchConfigFile(tm *TunnelManager, configFile string, debug bool) error {
 				}
 
 				debounceTimer = time.AfterFunc(debounceDuration, func() {
-					if err := tm.reloadConfig(configFile, debug); err != nil {
+					if err := tm.reloadConfig(absConfig, debug); err != nil {
 						log.Printf("Failed to reload config: %v", err)
 					}
 				})
@@ -764,6 +900,9 @@ func main() {
 		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Initialize tunnel manager
 	tunnelManager := &TunnelManager{}
 
@@ -786,19 +925,47 @@ func main() {
 
 	// Start file watcher for automatic config reload
 	go func() {
-		if err := watchConfigFile(tunnelManager, configFile, debug); err != nil {
+		if err := watchConfigFile(ctx, tunnelManager, configFile, debug); err != nil {
 			log.Printf("File watcher stopped: %v", err)
 		}
 	}()
 
 	// HTTP server for metrics
-	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "OK")
 	})
 
+	server := &http.Server{
+		Addr:    listenAddr,
+		Handler: mux,
+	}
+
 	log.Printf("Metrics server listening on %s", listenAddr)
 	log.Printf("Config auto-reload enabled for: %s", configFile)
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
+
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	case <-ctx.Done():
+		log.Printf("Shutdown signal received, stopping HTTP server")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+		err := <-serverErr
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}
 }

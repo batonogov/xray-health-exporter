@@ -31,7 +31,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Настройка Go
         uses: actions/setup-go@v6
@@ -61,7 +61,7 @@ jobs:
             goarch: arm
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Настройка Go
         uses: actions/setup-go@v6
@@ -90,7 +90,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Генерация версии
         id: version
@@ -124,7 +124,7 @@ jobs:
     needs: [build, docker]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Генерация версии
         id: version

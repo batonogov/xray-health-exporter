@@ -708,6 +708,13 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
+	// Capture existing instances and stop them to free SOCKS ports before re-init.
+	tm.mu.Lock()
+	oldInstances := tm.instances
+	tm.instances = nil
+	tm.mu.Unlock()
+	stopTunnels(oldInstances)
+
 	// Initialize new tunnels
 	newInstances, err := initializeTunnels(newConfig, debug)
 	if err != nil {
@@ -717,16 +724,13 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 
 	// Replace old instances with new ones
 	tm.mu.Lock()
-	oldInstances := tm.instances
 	tm.instances = newInstances
 	tm.mu.Unlock()
 
 	// Cleanup metrics that belong to tunnels that no longer exist
 	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
 
-	// Stop old tunnels
-	log.Printf("Stopping old tunnel instances")
-	stopTunnels(oldInstances)
+	// Old tunnels already stopped above.
 
 	log.Printf("Configuration reloaded successfully with %d tunnels", len(newInstances))
 	return nil

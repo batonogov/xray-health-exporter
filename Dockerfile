@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o xray-health-exporter .
 
 # Финальная стадия
-FROM alpine:3.23.2
+FROM alpine:3.23.3
 
 RUN apk --no-cache --no-scripts add ca-certificates && \
     addgroup -g 10001 xray && \

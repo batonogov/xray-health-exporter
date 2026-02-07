@@ -601,6 +601,21 @@ func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
 	}
 }
 
+// waitForSOCKSPort polls the SOCKS port until it accepts connections or the timeout expires.
+func waitForSOCKSPort(port int, timeout time.Duration) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("port %d not ready after %v", port, timeout)
+}
+
 // initializeTunnels creates and starts all tunnel instances from config
 func initializeTunnels(config *Config, debug bool) ([]*TunnelInstance, error) {
 	if len(config.Tunnels) == 0 {
@@ -635,8 +650,12 @@ func initializeTunnels(config *Config, debug bool) ([]*TunnelInstance, error) {
 			ti.Name, ti.VLESSConfig.Address, ti.VLESSConfig.Port, ti.VLESSConfig.Security, socksPort)
 	}
 
-	// Wait for all Xray instances to start
-	time.Sleep(5 * time.Second)
+	// Wait for all SOCKS ports to become ready
+	for _, ti := range tunnelInstances {
+		if err := waitForSOCKSPort(ti.SocksPort, 10*time.Second); err != nil {
+			log.Printf("[%s] Warning: SOCKS port %d not ready: %v", ti.Name, ti.SocksPort, err)
+		}
+	}
 
 	// Start checker goroutines for all tunnels
 	for _, ti := range tunnelInstances {

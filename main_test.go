@@ -840,6 +840,60 @@ func TestInitializeTunnels(t *testing.T) {
 	})
 }
 
+func TestWaitForSOCKSPort(t *testing.T) {
+	t.Run("port ready immediately", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		defer listener.Close()
+
+		_, portStr, _ := net.SplitHostPort(listener.Addr().String())
+		port := 0
+		fmt.Sscanf(portStr, "%d", &port)
+
+		err = waitForSOCKSPort(port, 2*time.Second)
+		if err != nil {
+			t.Errorf("waitForSOCKSPort() error = %v, expected nil", err)
+		}
+	})
+
+	t.Run("port becomes ready after delay", func(t *testing.T) {
+		// Find a free port by binding and immediately releasing
+		tmpListener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to find free port: %v", err)
+		}
+		_, portStr, _ := net.SplitHostPort(tmpListener.Addr().String())
+		port := 0
+		fmt.Sscanf(portStr, "%d", &port)
+		tmpListener.Close()
+
+		// Start listening after a short delay
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err != nil {
+				return
+			}
+			defer l.Close()
+			time.Sleep(3 * time.Second)
+		}()
+
+		err = waitForSOCKSPort(port, 3*time.Second)
+		if err != nil {
+			t.Errorf("waitForSOCKSPort() error = %v, expected nil", err)
+		}
+	})
+
+	t.Run("port never ready", func(t *testing.T) {
+		err := waitForSOCKSPort(59999, 1*time.Second)
+		if err == nil {
+			t.Error("waitForSOCKSPort() expected error for unavailable port")
+		}
+	})
+}
+
 func TestStopTunnels(t *testing.T) {
 	// Создаем mock туннель
 	ctx, cancel := context.WithCancel(context.Background())

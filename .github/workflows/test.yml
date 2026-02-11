@@ -42,6 +42,11 @@ jobs:
           fi
           echo "✅ Код отформатирован правильно"
 
+      - name: 🔎 Линтер golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
       - name: 🏗️ Проверка сборки
         run: |
           echo "🔨 Сборка проекта..."

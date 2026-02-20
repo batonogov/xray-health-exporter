@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -567,8 +568,9 @@ func checkTunnel(ti *TunnelInstance) {
 	}
 
 	// Читаем немного тела ответа чтобы убедиться что соединение работает
-	buf := make([]byte, 1024)
-	resp.Body.Read(buf)
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 1024)); err != nil {
+		log.Printf("[%s] Warning: failed to read response body: %v", ti.Name, err)
+	}
 
 	duration := time.Since(start)
 	log.Printf("[%s] ✓ Tunnel UP [%v]", ti.Name, duration.Round(time.Millisecond))

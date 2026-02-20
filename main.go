@@ -616,6 +616,23 @@ func waitForSOCKSPort(port int, timeout time.Duration) error {
 	return fmt.Errorf("port %d not ready after %v", port, timeout)
 }
 
+// validateTunnels checks that all tunnel configs are valid without starting Xray instances.
+// This allows catching errors before stopping existing tunnels during reload.
+func validateTunnels(config *Config) error {
+	for i, tunnel := range config.Tunnels {
+		if _, err := parseVLESSURL(tunnel.URL); err != nil {
+			return fmt.Errorf("tunnel %d (%s): invalid VLESS URL: %v", i+1, tunnel.Name, err)
+		}
+		if _, err := time.ParseDuration(tunnel.CheckInterval); err != nil {
+			return fmt.Errorf("tunnel %d (%s): invalid check_interval: %v", i+1, tunnel.Name, err)
+		}
+		if _, err := time.ParseDuration(tunnel.CheckTimeout); err != nil {
+			return fmt.Errorf("tunnel %d (%s): invalid check_timeout: %v", i+1, tunnel.Name, err)
+		}
+	}
+	return nil
+}
+
 // initializeTunnels creates and starts all tunnel instances from config
 func initializeTunnels(config *Config, debug bool) ([]*TunnelInstance, error) {
 	if len(config.Tunnels) == 0 {
@@ -725,6 +742,12 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	if err != nil {
 		log.Printf("Failed to load new config: %v", err)
 		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Validate all tunnels before stopping existing ones to avoid downtime on bad config
+	if err := validateTunnels(newConfig); err != nil {
+		log.Printf("New config validation failed, keeping current tunnels: %v", err)
+		return fmt.Errorf("config validation failed: %v", err)
 	}
 
 	// Capture existing instances and stop them to free SOCKS ports before re-init.

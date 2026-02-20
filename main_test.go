@@ -2107,6 +2107,166 @@ tunnels:
 	}
 }
 
+func TestValidateTunnels(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "valid",
+					URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		if err := validateTunnels(config); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid VLESS URL", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "bad-url",
+					URL:           "not-a-vless-url",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Error("expected error for invalid VLESS URL")
+		}
+		if !strings.Contains(err.Error(), "invalid VLESS URL") {
+			t.Errorf("expected VLESS URL error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_interval", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "bad-interval",
+					URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+					CheckURL:      "https://example.com",
+					CheckInterval: "not-a-duration",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Error("expected error for invalid check_interval")
+		}
+		if !strings.Contains(err.Error(), "invalid check_interval") {
+			t.Errorf("expected check_interval error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_timeout", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "bad-timeout",
+					URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "not-a-duration",
+				},
+			},
+		}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Error("expected error for invalid check_timeout")
+		}
+		if !strings.Contains(err.Error(), "invalid check_timeout") {
+			t.Errorf("expected check_timeout error, got: %v", err)
+		}
+	})
+
+	t.Run("second tunnel invalid", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "good",
+					URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+				{
+					Name:          "bad",
+					URL:           "http://not-vless",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Error("expected error for second tunnel")
+		}
+		if !strings.Contains(err.Error(), "tunnel 2") {
+			t.Errorf("expected error about tunnel 2, got: %v", err)
+		}
+	})
+}
+
+func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	// Write invalid config
+	invalidConfig := `tunnels:
+  - name: "bad"
+    url: "not-a-vless-url"
+    check_interval: "30s"
+    check_timeout: "10s"`
+
+	if err := os.WriteFile(configFile, []byte(invalidConfig), 0644); err != nil {
+		t.Fatalf("failed to write invalid config: %v", err)
+	}
+
+	// Simulate existing tunnel instances
+	existingInstance := &TunnelInstance{
+		Name: "existing-tunnel",
+		VLESSConfig: &VLESSConfig{
+			Address:  "example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.com",
+		},
+		SocksPort:     1080,
+		CheckTimeout:  10 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	tm := &TunnelManager{
+		instances: []*TunnelInstance{existingInstance},
+	}
+
+	// Reload should fail validation and keep old tunnels
+	err := tm.reloadConfig(configFile, false)
+	if err == nil {
+		t.Error("expected error for invalid config")
+	}
+
+	// Old tunnels should still be present
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	if len(tm.instances) != 1 {
+		t.Errorf("expected 1 existing tunnel to remain, got %d", len(tm.instances))
+	}
+	if tm.instances[0].Name != "existing-tunnel" {
+		t.Errorf("expected existing-tunnel, got %s", tm.instances[0].Name)
+	}
+}
+
 func TestWatchConfigFile_ChmodEvent(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.yaml")

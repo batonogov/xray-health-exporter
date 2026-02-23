@@ -807,7 +807,7 @@ func TestInitializeTunnels(t *testing.T) {
 			Tunnels: []Tunnel{},
 		}
 
-		instances, err := initializeTunnels(config, false)
+		instances, err := initializeTunnels(config, false, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for empty tunnels")
 		}
@@ -830,7 +830,7 @@ func TestInitializeTunnels(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, false)
+		instances, err := initializeTunnels(config, false, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for invalid URL")
 		}
@@ -2104,6 +2104,267 @@ tunnels:
 		t.Fatalf("watcher error: %v", err)
 	case <-time.After(4 * time.Second):
 		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestTunnelValidate(t *testing.T) {
+	t.Run("valid tunnel", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "valid",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		if err := tunnel.Validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid VLESS URL", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "bad-url",
+			URL:           "not-a-vless-url",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid VLESS URL")
+		}
+		if !strings.Contains(err.Error(), "invalid VLESS URL") {
+			t.Errorf("expected VLESS URL error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_interval", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "bad-interval",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "not-a-duration",
+			CheckTimeout:  "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid check_interval")
+		}
+		if !strings.Contains(err.Error(), "invalid check_interval") {
+			t.Errorf("expected check_interval error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_timeout", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "bad-timeout",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "not-a-duration",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid check_timeout")
+		}
+		if !strings.Contains(err.Error(), "invalid check_timeout") {
+			t.Errorf("expected check_timeout error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid check_url", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "bad-check-url",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "ftp://not-http.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid check_url")
+		}
+		if !strings.Contains(err.Error(), "invalid check_url") {
+			t.Errorf("expected check_url error, got: %v", err)
+		}
+	})
+
+	t.Run("multiple errors at once", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "all-bad",
+			URL:           "not-a-vless-url",
+			CheckURL:      "ftp://bad",
+			CheckInterval: "bad-interval",
+			CheckTimeout:  "bad-timeout",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected errors")
+		}
+		errStr := err.Error()
+		if !strings.Contains(errStr, "invalid VLESS URL") {
+			t.Errorf("expected VLESS URL error in: %v", errStr)
+		}
+		if !strings.Contains(errStr, "invalid check_interval") {
+			t.Errorf("expected check_interval error in: %v", errStr)
+		}
+		if !strings.Contains(errStr, "invalid check_timeout") {
+			t.Errorf("expected check_timeout error in: %v", errStr)
+		}
+		if !strings.Contains(errStr, "invalid check_url") {
+			t.Errorf("expected check_url error in: %v", errStr)
+		}
+	})
+
+	t.Run("http check_url is valid", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "http-url",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "http://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		if err := tunnel.Validate(); err != nil {
+			t.Errorf("expected no error for http check_url, got: %v", err)
+		}
+	})
+}
+
+func TestValidateTunnels(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "valid",
+					URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		if err := validateTunnels(config); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("collects errors from all tunnels", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "bad1",
+					URL:           "not-a-vless-url",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+				{
+					Name:          "bad2",
+					URL:           "http://also-not-vless",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Fatal("expected errors for both tunnels")
+		}
+		errStr := err.Error()
+		if !strings.Contains(errStr, "tunnel 1") {
+			t.Errorf("expected error about tunnel 1, got: %v", errStr)
+		}
+		if !strings.Contains(errStr, "tunnel 2") {
+			t.Errorf("expected error about tunnel 2, got: %v", errStr)
+		}
+	})
+
+	t.Run("first valid second invalid", func(t *testing.T) {
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:          "good",
+					URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+				{
+					Name:          "bad",
+					URL:           "http://not-vless",
+					CheckURL:      "https://example.com",
+					CheckInterval: "30s",
+					CheckTimeout:  "10s",
+				},
+			},
+		}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Fatal("expected error for second tunnel")
+		}
+		errStr := err.Error()
+		if !strings.Contains(errStr, "tunnel 2") {
+			t.Errorf("expected error about tunnel 2, got: %v", errStr)
+		}
+		// Should NOT contain tunnel 1 error since it's valid
+		if strings.Contains(errStr, "tunnel 1") {
+			t.Errorf("should not have error about tunnel 1, got: %v", errStr)
+		}
+	})
+}
+
+func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	// Write invalid config
+	invalidConfig := `tunnels:
+  - name: "bad"
+    url: "not-a-vless-url"
+    check_interval: "30s"
+    check_timeout: "10s"`
+
+	if err := os.WriteFile(configFile, []byte(invalidConfig), 0644); err != nil {
+		t.Fatalf("failed to write invalid config: %v", err)
+	}
+
+	// Simulate existing tunnel instances
+	existingInstance := &TunnelInstance{
+		Name: "existing-tunnel",
+		VLESSConfig: &VLESSConfig{
+			Address:  "example.com",
+			Port:     443,
+			Security: "tls",
+			SNI:      "test.com",
+		},
+		SocksPort:     1080,
+		CheckTimeout:  10 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	tm := &TunnelManager{
+		instances:     []*TunnelInstance{existingInstance},
+		nextSocksPort: defaultSocksPort + 1,
+	}
+
+	// Reload should fail validation and keep old tunnels
+	err := tm.reloadConfig(configFile, false)
+	if err == nil {
+		t.Fatal("expected error for invalid config")
+	}
+	if !strings.Contains(err.Error(), "config validation failed") {
+		t.Errorf("expected 'config validation failed' in error, got: %v", err)
+	}
+
+	// Old tunnels should still be present
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	if len(tm.instances) != 1 {
+		t.Errorf("expected 1 existing tunnel to remain, got %d", len(tm.instances))
+	}
+	if tm.instances[0].Name != "existing-tunnel" {
+		t.Errorf("expected existing-tunnel, got %s", tm.instances[0].Name)
 	}
 }
 

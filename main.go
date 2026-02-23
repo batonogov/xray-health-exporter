@@ -36,6 +36,8 @@ const (
 	defaultSocksPort     = 1080
 	defaultCheckInterval = 30 * time.Second
 	defaultConfigFile    = "/app/config.yaml"
+	socksDialTimeout     = 5 * time.Second
+	socksStartupTimeout  = 10 * time.Second
 )
 
 var (
@@ -507,7 +509,7 @@ func checkTunnel(ti *TunnelInstance) {
 	socksProxy := fmt.Sprintf("127.0.0.1:%d", ti.SocksPort)
 
 	// Сначала проверим что SOCKS5 прокси вообще работает
-	conn, err := net.DialTimeout("tcp", socksProxy, ti.CheckTimeout)
+	conn, err := net.DialTimeout("tcp", socksProxy, min(socksDialTimeout, ti.CheckTimeout))
 	if err != nil {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
@@ -652,7 +654,7 @@ func initializeTunnels(config *Config, debug bool) ([]*TunnelInstance, error) {
 
 	// Wait for all SOCKS ports to become ready
 	for _, ti := range tunnelInstances {
-		if err := waitForSOCKSPort(ti.SocksPort, ti.CheckTimeout); err != nil {
+		if err := waitForSOCKSPort(ti.SocksPort, socksStartupTimeout); err != nil {
 			log.Printf("[%s] Warning: SOCKS port %d not ready: %v", ti.Name, ti.SocksPort, err)
 		}
 	}

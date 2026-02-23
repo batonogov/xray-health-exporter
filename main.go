@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -566,14 +567,22 @@ func checkTunnel(ti *TunnelInstance) {
 		return
 	}
 
-	// Читаем немного тела ответа чтобы убедиться что соединение работает
-	buf := make([]byte, 1024)
-	resp.Body.Read(buf)
+	// Читаем немного тела ответа чтобы убедиться что соединение работает.
+	// Полный drain не нужен: транспорт использует DisableKeepAlives: true,
+	// поэтому соединение не переиспользуется и будет закрыто вместе с resp.Body.
+	_, bodyErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if bodyErr != nil {
+		log.Printf("[%s] Warning: failed to read response body: %v", ti.Name, bodyErr)
+	}
 
 	duration := time.Since(start)
 	log.Printf("[%s] ✓ Tunnel UP [%v]", ti.Name, duration.Round(time.Millisecond))
 	tunnelUp.With(labels).Set(1)
-	tunnelLatency.With(labels).Set(duration.Seconds())
+	// Latency обновляем только при успешном чтении body,
+	// иначе замер duration может быть неточным.
+	if bodyErr == nil {
+		tunnelLatency.With(labels).Set(duration.Seconds())
+	}
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
 	tunnelCheckTotal.With(prometheus.Labels{
 		"name":     ti.Name,

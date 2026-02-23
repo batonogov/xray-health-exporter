@@ -134,8 +134,9 @@ type TunnelInstance struct {
 
 // TunnelManager manages tunnel instances with thread-safe access
 type TunnelManager struct {
-	mu        sync.RWMutex
-	instances []*TunnelInstance
+	mu            sync.RWMutex
+	instances     []*TunnelInstance
+	nextSocksPort int
 }
 
 func loadConfig(configPath string) (*Config, error) {
@@ -616,31 +617,44 @@ func waitForSOCKSPort(port int, timeout time.Duration) error {
 	return fmt.Errorf("port %d not ready after %v", port, timeout)
 }
 
+// Validate checks that a tunnel configuration is valid without starting an Xray instance.
+// It collects all validation errors and returns them joined together.
+func (t *Tunnel) Validate() error {
+	var errs []error
+	if _, err := parseVLESSURL(t.URL); err != nil {
+		errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+	}
+	if _, err := time.ParseDuration(t.CheckInterval); err != nil {
+		errs = append(errs, fmt.Errorf("invalid check_interval: %v", err))
+	}
+	if _, err := time.ParseDuration(t.CheckTimeout); err != nil {
+		errs = append(errs, fmt.Errorf("invalid check_timeout: %v", err))
+	}
+	if u, err := url.Parse(t.CheckURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		errs = append(errs, fmt.Errorf("invalid check_url: must be http or https URL"))
+	}
+	return errors.Join(errs...)
+}
+
 // validateTunnels checks that all tunnel configs are valid without starting Xray instances.
 // This allows catching errors before stopping existing tunnels during reload.
 func validateTunnels(config *Config) error {
+	var errs []error
 	for i, tunnel := range config.Tunnels {
-		if _, err := parseVLESSURL(tunnel.URL); err != nil {
-			return fmt.Errorf("tunnel %d (%s): invalid VLESS URL: %v", i+1, tunnel.Name, err)
-		}
-		if _, err := time.ParseDuration(tunnel.CheckInterval); err != nil {
-			return fmt.Errorf("tunnel %d (%s): invalid check_interval: %v", i+1, tunnel.Name, err)
-		}
-		if _, err := time.ParseDuration(tunnel.CheckTimeout); err != nil {
-			return fmt.Errorf("tunnel %d (%s): invalid check_timeout: %v", i+1, tunnel.Name, err)
+		if err := tunnel.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("tunnel %d (%s): %w", i+1, tunnel.Name, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // initializeTunnels creates and starts all tunnel instances from config
-func initializeTunnels(config *Config, debug bool) ([]*TunnelInstance, error) {
+func initializeTunnels(config *Config, debug bool, baseSocksPort int) ([]*TunnelInstance, error) {
 	if len(config.Tunnels) == 0 {
 		return nil, fmt.Errorf("no tunnels to initialize")
 	}
 
 	var tunnelInstances []*TunnelInstance
-	baseSocksPort := defaultSocksPort
 
 	for i, tunnel := range config.Tunnels {
 		socksPort := baseSocksPort + i
@@ -733,7 +747,8 @@ func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 	}
 }
 
-// reloadConfig gracefully reloads configuration
+// reloadConfig gracefully reloads configuration using a "start new, then stop old" strategy
+// to avoid downtime: new tunnels are started on fresh ports before old ones are stopped.
 func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	log.Printf("Reloading configuration from %s", configFile)
 
@@ -744,35 +759,32 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
-	// Validate all tunnels before stopping existing ones to avoid downtime on bad config
+	// Validate all tunnels before attempting to start new ones
 	if err := validateTunnels(newConfig); err != nil {
-		log.Printf("New config validation failed, keeping current tunnels: %v", err)
+		log.Printf("Config validation failed, keeping current tunnels: %v", err)
 		return fmt.Errorf("config validation failed: %v", err)
 	}
 
-	// Capture existing instances and stop them to free SOCKS ports before re-init.
-	tm.mu.Lock()
-	oldInstances := tm.instances
-	tm.instances = nil
-	tm.mu.Unlock()
-	stopTunnels(oldInstances)
+	// Start new tunnels on next available ports (no overlap with current)
+	tm.mu.RLock()
+	newBasePort := tm.nextSocksPort
+	tm.mu.RUnlock()
 
-	// Initialize new tunnels
-	newInstances, err := initializeTunnels(newConfig, debug)
+	newInstances, err := initializeTunnels(newConfig, debug, newBasePort)
 	if err != nil {
-		log.Printf("Failed to initialize new tunnels: %v", err)
+		log.Printf("Failed to start new tunnels, keeping current: %v", err)
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
 
-	// Replace old instances with new ones
+	// New tunnels are running — safe to swap and stop old ones
 	tm.mu.Lock()
+	oldInstances := tm.instances
 	tm.instances = newInstances
+	tm.nextSocksPort = newBasePort + len(newInstances)
 	tm.mu.Unlock()
 
-	// Cleanup metrics that belong to tunnels that no longer exist
+	stopTunnels(oldInstances)
 	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
-
-	// Old tunnels already stopped above.
 
 	log.Printf("Configuration reloaded successfully with %d tunnels", len(newInstances))
 	return nil
@@ -950,16 +962,17 @@ func main() {
 	defer stop()
 
 	// Initialize tunnel manager
-	tunnelManager := &TunnelManager{}
+	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
 
 	// Initialize all tunnels
-	tunnelInstances, err := initializeTunnels(config, debug)
+	tunnelInstances, err := initializeTunnels(config, debug, defaultSocksPort)
 	if err != nil {
 		log.Fatalf("Failed to initialize tunnels: %v", err)
 	}
 
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
+	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
 	tunnelManager.mu.Unlock()
 
 	// Cleanup on exit

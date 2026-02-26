@@ -156,6 +156,14 @@ jobs:
             coverage.txt
           retention-days: 30
 
+      - name: 🐳 Проверка Docker build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: xray-health-exporter:test
+
       - name: 📋 Итоги
         if: always()
         run: |
@@ -164,4 +172,5 @@ jobs:
           echo "- **Покрытие кода:** ${{ steps.coverage.outputs.coverage }}%" >> $GITHUB_STEP_SUMMARY
           echo "- **Форматирование:** ✅ Пройдено" >> $GITHUB_STEP_SUMMARY
           echo "- **Сборка:** ✅ Успешно" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker:** ✅ Образ собран" >> $GITHUB_STEP_SUMMARY
           echo "- **Тесты:** ✅ Все тесты пройдены" >> $GITHUB_STEP_SUMMARY

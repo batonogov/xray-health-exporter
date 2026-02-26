@@ -41,6 +41,9 @@ const (
 	socksStartupTimeout  = 10 * time.Second
 )
 
+// Version is set at build time via -ldflags="-X main.Version=..."
+var Version = "dev"
+
 var (
 	tunnelUp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -946,6 +949,8 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 }
 
 func main() {
+	log.Printf("xray-health-exporter %s", Version)
+
 	// Get config file path
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile == "" {

@@ -4,7 +4,7 @@ tasks:
   build:
     desc: Собрать бинарный файл
     cmds:
-      - go build -o xray-health-exporter .
+      - go build -ldflags="-X main.Version=dev" -o xray-health-exporter .
 
   test:
     desc: Запустить тесты

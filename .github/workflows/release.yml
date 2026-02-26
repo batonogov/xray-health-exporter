@@ -1,54 +1,32 @@
 name: Релиз
 
-# Этот workflow запускается при:
-# - Pull requests: Тестирует сборку, docker build и загрузку артефактов (без фактического релиза/push)
-# - Push в main: Полный релиз с docker push и созданием GitHub релиза
-
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "Dockerfile"
-      - ".github/workflows/release.yml"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "Dockerfile"
-      - ".github/workflows/release.yml"
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  test:
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_short: ${{ steps.version.outputs.version_short }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Настройка Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.25"
-
-      - name: Запуск тестов
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic
-
-      - name: Загрузка покрытия
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage.txt
-          fail_ci_if_error: false
+      - name: Извлечение версии из тега
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          # v1.2.3 -> 1.2
+          SHORT=$(echo "$VERSION" | sed 's/^v//' | cut -d. -f1,2)
+          echo "version_short=$SHORT" >> $GITHUB_OUTPUT
+          echo "Версия: $VERSION (короткая: $SHORT)"
 
   build:
-    needs: test
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -75,7 +53,8 @@ jobs:
           GOARM: ${{ matrix.goarch == 'arm' && '7' || '' }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
+          go build -ldflags="-s -w -X main.Version=${{ needs.version.outputs.version }}" \
+            -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       - name: Загрузка артефакта
         uses: actions/upload-artifact@v6
@@ -84,19 +63,13 @@ jobs:
           path: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
 
   docker:
-    needs: test
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v6
-
-      - name: Генерация версии
-        id: version
-        run: |
-          VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Настройка Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -114,23 +87,20 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'latest' }}
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version_short }}
+            ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   release:
-    needs: [build, docker]
+    needs: [version, build, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Генерация версии
-        id: version
-        run: |
-          VERSION="v$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Скачивание Linux AMD64 бинарника
         uses: actions/download-artifact@v7
@@ -150,22 +120,13 @@ jobs:
           name: xray-health-exporter-linux-arm
           path: artifacts/xray-health-exporter-linux-arm
 
-      - name: Проверка артефактов (для PR)
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "✅ Артефакты успешно загружены:"
-          ls -lh artifacts/*/xray-health-exporter-*
-          echo ""
-          echo "Это PR - пропускаем создание фактического релиза"
-
       - name: Создание релиза
-        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: Релиз ${{ steps.version.outputs.version }}
+          tag_name: ${{ needs.version.outputs.version }}
+          name: Релиз ${{ needs.version.outputs.version }}
           body: |
-            ## Xray Health Exporter
+            ## Xray Health Exporter ${{ needs.version.outputs.version }}
 
             Prometheus exporter для мониторинга множественных VLESS туннелей со встроенным Xray-core.
 
@@ -201,11 +162,11 @@ jobs:
             # Создайте config.yaml (см. выше)
 
             # Запустите
-            docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             docker run --rm \
               -v $(pwd)/config.yaml:/app/config.yaml:ro \
               -p 9273:9273 \
-              ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+              ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             ```
 
             См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.

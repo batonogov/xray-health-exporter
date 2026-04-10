@@ -2564,3 +2564,119 @@ tunnels:
 		t.Fatal("watcher did not exit after timeout")
 	}
 }
+
+func TestLoadXrayConfigFile(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "xray.json")
+		os.WriteFile(path, []byte(`{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"srv.com","port":443}]},"streamSettings":{"security":"tls","tlsSettings":{"serverName":"srv.com"}}}]}`), 0644)
+
+		data, labels, err := loadXrayConfigFile(path, 2080)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+
+		// Check SOCKS inbound was injected
+		var result map[string]interface{}
+		json.Unmarshal(data, &result)
+		inbounds := result["inbounds"].([]interface{})
+		inbound := inbounds[0].(map[string]interface{})
+		if inbound["port"].(float64) != 2080 {
+			t.Errorf("socks port = %v, want 2080", inbound["port"])
+		}
+		if inbound["protocol"] != "socks" {
+			t.Errorf("protocol = %v, want socks", inbound["protocol"])
+		}
+
+		// Check labels
+		if labels.Server != "srv.com:443" {
+			t.Errorf("Server = %v, want srv.com:443", labels.Server)
+		}
+		if labels.Security != "tls" {
+			t.Errorf("Security = %v, want tls", labels.Security)
+		}
+		if labels.SNI != "srv.com" {
+			t.Errorf("SNI = %v, want srv.com", labels.SNI)
+		}
+	})
+
+	t.Run("nonexistent file", func(t *testing.T) {
+		_, _, err := loadXrayConfigFile("/nonexistent/xray.json", 2080)
+		if err == nil {
+			t.Error("expected error")
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "bad.json")
+		os.WriteFile(path, []byte(`not json`), 0644)
+
+		_, _, err := loadXrayConfigFile(path, 2080)
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+	})
+}
+
+func TestInitTunnel_XrayConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+
+	xrayJSON := `{
+		"outbounds": [
+			{
+				"protocol": "vless",
+				"settings": {
+					"vnext": [{
+						"address": "example.com",
+						"port": 443,
+						"users": [{"id": "test-uuid", "encryption": "none"}]
+					}]
+				},
+				"streamSettings": {
+					"network": "tcp",
+					"security": "tls",
+					"tlsSettings": {
+						"serverName": "example.com",
+						"fingerprint": "chrome"
+					}
+				}
+			}
+		]
+	}`
+	os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+	tunnel := &Tunnel{
+		Name:           "json-tunnel",
+		XrayConfigFile: xrayConfigPath,
+		CheckURL:       "https://example.com",
+		CheckInterval:  "30s",
+		CheckTimeout:   "10s",
+	}
+
+	ti, err := initTunnel(tunnel, 11080, false)
+	if err != nil {
+		t.Fatalf("initTunnel() error = %v", err)
+	}
+	defer ti.XrayInstance.Close()
+
+	if ti.Name != "json-tunnel" {
+		t.Errorf("Name = %v, want json-tunnel", ti.Name)
+	}
+	if ti.SocksPort != 11080 {
+		t.Errorf("SocksPort = %v, want 11080", ti.SocksPort)
+	}
+	if ti.VLESSConfig != nil {
+		t.Error("VLESSConfig should be nil for xray_config_file tunnel")
+	}
+	if ti.MetricLabels.Server != "example.com:443" {
+		t.Errorf("MetricLabels.Server = %v, want example.com:443", ti.MetricLabels.Server)
+	}
+	if ti.MetricLabels.Security != "tls" {
+		t.Errorf("MetricLabels.Security = %v, want tls", ti.MetricLabels.Security)
+	}
+	if ti.MetricLabels.SNI != "example.com" {
+		t.Errorf("MetricLabels.SNI = %v, want example.com", ti.MetricLabels.SNI)
+	}
+}

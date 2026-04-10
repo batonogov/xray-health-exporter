@@ -365,14 +365,108 @@ func startXray(configJSON []byte) (*core.Instance, error) {
 	return instance, nil
 }
 
-func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, error) {
-	// Parse VLESS URL
-	vlessConfig, err := parseVLESSURL(tunnel.URL)
+func loadXrayConfigFile(path string, socksPort int) ([]byte, MetricLabels, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse VLESS URL: %v", err)
+		return nil, MetricLabels{}, fmt.Errorf("failed to read xray config file: %v", err)
 	}
 
-	// Parse durations
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, MetricLabels{}, fmt.Errorf("failed to parse xray config JSON: %v", err)
+	}
+
+	labels := extractMetricLabelsFromXrayConfig(raw)
+
+	logLevel := os.Getenv("XRAY_LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "warning"
+	}
+
+	// Inject log and SOCKS5 inbound, keep user's outbounds
+	raw["log"] = map[string]interface{}{
+		"loglevel": logLevel,
+	}
+	raw["inbounds"] = []map[string]interface{}{
+		{
+			"port":     socksPort,
+			"listen":   "127.0.0.1",
+			"protocol": "socks",
+			"settings": map[string]interface{}{
+				"auth": "noauth",
+				"udp":  true,
+			},
+		},
+	}
+
+	result, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, MetricLabels{}, fmt.Errorf("failed to marshal xray config: %v", err)
+	}
+
+	return result, labels, nil
+}
+
+func extractMetricLabelsFromXrayConfig(raw map[string]interface{}) MetricLabels {
+	labels := MetricLabels{}
+
+	outbounds, ok := raw["outbounds"].([]interface{})
+	if !ok || len(outbounds) == 0 {
+		return labels
+	}
+
+	ob, ok := outbounds[0].(map[string]interface{})
+	if !ok {
+		return labels
+	}
+
+	// Try to extract server address from settings
+	if settings, ok := ob["settings"].(map[string]interface{}); ok {
+		// VLESS/VMess: vnext[0].address:port
+		if vnext, ok := settings["vnext"].([]interface{}); ok && len(vnext) > 0 {
+			if server, ok := vnext[0].(map[string]interface{}); ok {
+				addr, _ := server["address"].(string)
+				port, _ := server["port"].(float64)
+				if addr != "" && port > 0 {
+					labels.Server = fmt.Sprintf("%s:%d", addr, int(port))
+				}
+			}
+		}
+		// Trojan/Shadowsocks: servers[0].address:port
+		if labels.Server == "" {
+			if servers, ok := settings["servers"].([]interface{}); ok && len(servers) > 0 {
+				if server, ok := servers[0].(map[string]interface{}); ok {
+					addr, _ := server["address"].(string)
+					port, _ := server["port"].(float64)
+					if addr != "" && port > 0 {
+						labels.Server = fmt.Sprintf("%s:%d", addr, int(port))
+					}
+				}
+			}
+		}
+	}
+
+	// Extract security and SNI from streamSettings
+	if ss, ok := ob["streamSettings"].(map[string]interface{}); ok {
+		if sec, ok := ss["security"].(string); ok {
+			labels.Security = sec
+		}
+		if rs, ok := ss["realitySettings"].(map[string]interface{}); ok {
+			if sni, ok := rs["serverName"].(string); ok {
+				labels.SNI = sni
+			}
+		}
+		if ts, ok := ss["tlsSettings"].(map[string]interface{}); ok {
+			if sni, ok := ts["serverName"].(string); ok {
+				labels.SNI = sni
+			}
+		}
+	}
+
+	return labels
+}
+
+func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, error) {
 	checkInterval, err := time.ParseDuration(tunnel.CheckInterval)
 	if err != nil {
 		return nil, fmt.Errorf("invalid check_interval: %v", err)
@@ -383,32 +477,51 @@ func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, err
 		return nil, fmt.Errorf("invalid check_timeout: %v", err)
 	}
 
-	// Create Xray config
-	xrayConfigJSON, err := createXrayConfig(vlessConfig, socksPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Xray config: %v", err)
+	var xrayConfigJSON []byte
+	var vlessConfig *VLESSConfig
+	var metricLabels MetricLabels
+
+	if tunnel.XrayConfigFile != "" {
+		// xray_config_file mode
+		xrayConfigJSON, metricLabels, err = loadXrayConfigFile(tunnel.XrayConfigFile, socksPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load xray config file: %v", err)
+		}
+	} else {
+		// VLESS URL mode
+		vlessConfig, err = parseVLESSURL(tunnel.URL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse VLESS URL: %v", err)
+		}
+
+		metricLabels = MetricLabels{
+			Server:   fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port),
+			Security: vlessConfig.Security,
+			SNI:      vlessConfig.SNI,
+		}
+
+		xrayConfigJSON, err = createXrayConfig(vlessConfig, socksPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Xray config: %v", err)
+		}
 	}
 
 	if debug {
 		log.Printf("[%s] Xray config: %s", tunnel.Name, string(xrayConfigJSON))
 	}
 
-	// Start Xray instance
 	xrayInstance, err := startXray(xrayConfigJSON)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start Xray: %v", err)
 	}
 
-	// Generate name if not specified
 	name := tunnel.Name
 	if name == "" {
-		name = fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port)
-	}
-
-	metricLabels := MetricLabels{
-		Server:   fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port),
-		Security: vlessConfig.Security,
-		SNI:      vlessConfig.SNI,
+		if metricLabels.Server != "" {
+			name = metricLabels.Server
+		} else {
+			name = fmt.Sprintf("tunnel-port-%d", socksPort)
+		}
 	}
 
 	return &TunnelInstance{

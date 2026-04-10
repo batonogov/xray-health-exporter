@@ -2726,3 +2726,96 @@ func TestExtractMetricLabelsFromXrayConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_Subscriptions(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		wantErr   bool
+		checkFunc func(*testing.T, *Config)
+	}{
+		{
+			name: "config with subscription",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"
+    update_interval: "1h"
+tunnels:
+  - name: "manual"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if len(c.Subscriptions) != 1 {
+					t.Fatalf("expected 1 subscription, got %d", len(c.Subscriptions))
+				}
+				if c.Subscriptions[0].URL != "https://provider.example.com/sub" {
+					t.Errorf("subscription url = %v", c.Subscriptions[0].URL)
+				}
+				if c.Subscriptions[0].UpdateInterval != "1h" {
+					t.Errorf("update_interval = %v", c.Subscriptions[0].UpdateInterval)
+				}
+			},
+		},
+		{
+			name: "subscription only (no manual tunnels)",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"
+    update_interval: "1h"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if len(c.Subscriptions) != 1 {
+					t.Fatalf("expected 1 subscription, got %d", len(c.Subscriptions))
+				}
+				if len(c.Tunnels) != 0 {
+					t.Errorf("expected 0 tunnels, got %d", len(c.Tunnels))
+				}
+			},
+		},
+		{
+			name: "subscription with default update_interval",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if c.Subscriptions[0].UpdateInterval != "1h" {
+					t.Errorf("expected default update_interval '1h', got %v", c.Subscriptions[0].UpdateInterval)
+				}
+			},
+		},
+		{
+			name: "subscription with invalid update_interval",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"
+    update_interval: "invalid"`,
+			wantErr: true,
+		},
+		{
+			name: "subscription without url",
+			yaml: `subscriptions:
+  - update_interval: "1h"`,
+			wantErr: true,
+		},
+		{
+			name: "no tunnels and no subscriptions",
+			yaml: `defaults:
+  check_url: "https://example.com"`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configFile := filepath.Join(tmpDir, "config.yaml")
+			os.WriteFile(configFile, []byte(tt.yaml), 0644)
+
+			config, err := loadConfig(configFile)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("loadConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && tt.checkFunc != nil {
+				tt.checkFunc(t, config)
+			}
+		})
+	}
+}

@@ -96,14 +96,20 @@ func init() {
 
 // Config structures
 type Config struct {
-	Defaults Defaults `yaml:"defaults"`
-	Tunnels  []Tunnel `yaml:"tunnels"`
+	Defaults      Defaults       `yaml:"defaults"`
+	Tunnels       []Tunnel       `yaml:"tunnels"`
+	Subscriptions []Subscription `yaml:"subscriptions"`
 }
 
 type Defaults struct {
 	CheckURL      string `yaml:"check_url"`
 	CheckInterval string `yaml:"check_interval"`
 	CheckTimeout  string `yaml:"check_timeout"`
+}
+
+type Subscription struct {
+	URL            string `yaml:"url"`
+	UpdateInterval string `yaml:"update_interval"`
 }
 
 type Tunnel struct {
@@ -168,8 +174,21 @@ func loadConfig(configPath string) (*Config, error) {
 	}
 
 	// Validate
-	if len(config.Tunnels) == 0 {
-		return nil, fmt.Errorf("no tunnels defined in config")
+	if len(config.Tunnels) == 0 && len(config.Subscriptions) == 0 {
+		return nil, fmt.Errorf("no tunnels or subscriptions defined in config")
+	}
+
+	// Validate subscriptions
+	for i, sub := range config.Subscriptions {
+		if sub.URL == "" {
+			return nil, fmt.Errorf("subscription %d: url is required", i)
+		}
+		if sub.UpdateInterval == "" {
+			config.Subscriptions[i].UpdateInterval = "1h"
+		}
+		if _, err := time.ParseDuration(config.Subscriptions[i].UpdateInterval); err != nil {
+			return nil, fmt.Errorf("subscription %d: invalid update_interval: %v", i, err)
+		}
 	}
 
 	// Apply defaults to tunnels

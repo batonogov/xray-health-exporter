@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -2817,5 +2818,88 @@ tunnels:
 				tt.checkFunc(t, config)
 			}
 		})
+	}
+}
+
+func base64Encode(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func TestFetchSubscription(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  string
+		wantCount int
+		wantErr   bool
+		wantNames []string
+	}{
+		{
+			name:      "base64 encoded vless urls",
+			response:  base64Encode("vless://uuid1@host1.com:443?type=tcp&security=reality&pbk=key&sni=google.com&fp=chrome#Server1\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=host2.com&fp=chrome#Server2"),
+			wantCount: 2,
+			wantErr:   false,
+			wantNames: []string{"Server1", "Server2"},
+		},
+		{
+			name:      "plain text urls (not base64)",
+			response:  "vless://uuid1@host1.com:443?type=tcp&security=reality&pbk=key&sni=google.com&fp=chrome#Server1\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=host2.com&fp=chrome#Server2",
+			wantCount: 2,
+			wantErr:   false,
+			wantNames: []string{"Server1", "Server2"},
+		},
+		{
+			name:      "empty lines skipped",
+			response:  base64Encode("vless://uuid1@host1.com:443?type=tcp&security=tls&sni=h.com&fp=chrome#S1\n\n\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=h2.com&fp=chrome#S2\n"),
+			wantCount: 2,
+			wantErr:   false,
+		},
+		{
+			name:      "empty response",
+			response:  "",
+			wantCount: 0,
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tt.response))
+			}))
+			defer ts.Close()
+
+			tunnels, err := fetchSubscription(ts.URL)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("fetchSubscription() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if len(tunnels) != tt.wantCount {
+				t.Errorf("got %d tunnels, want %d", len(tunnels), tt.wantCount)
+			}
+			for i, wantName := range tt.wantNames {
+				if i < len(tunnels) && tunnels[i].Name != wantName {
+					t.Errorf("tunnel[%d].Name = %v, want %v", i, tunnels[i].Name, wantName)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchSubscription_HTTPError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	_, err := fetchSubscription(ts.URL)
+	if err == nil {
+		t.Error("expected error for HTTP 500")
+	}
+}
+
+func TestFetchSubscription_InvalidURL(t *testing.T) {
+	_, err := fetchSubscription("http://127.0.0.1:0/nonexistent")
+	if err == nil {
+		t.Error("expected error for unreachable URL")
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -229,6 +230,64 @@ func loadConfig(configPath string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func fetchSubscription(subURL string) ([]Tunnel, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(subURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch subscription: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("subscription returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read subscription response: %v", err)
+	}
+
+	content := strings.TrimSpace(string(body))
+	if content == "" {
+		return nil, nil
+	}
+
+	// Try to decode as base64
+	decoded, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		// Try URL-safe base64
+		decoded, err = base64.URLEncoding.DecodeString(content)
+		if err != nil {
+			// Not base64 — use as plain text
+			decoded = []byte(content)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(decoded)), "\n")
+
+	var tunnels []Tunnel
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		tunnel := Tunnel{URL: line}
+
+		// Extract name from fragment (#name)
+		if u, err := url.Parse(line); err == nil && u.Fragment != "" {
+			tunnel.Name = u.Fragment
+		} else if u != nil {
+			// Generate name from host:port
+			tunnel.Name = u.Host
+		}
+
+		tunnels = append(tunnels, tunnel)
+	}
+
+	return tunnels, nil
 }
 
 func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {

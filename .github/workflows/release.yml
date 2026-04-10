@@ -120,54 +120,35 @@ jobs:
           name: xray-health-exporter-linux-arm
           path: artifacts/xray-health-exporter-linux-arm
 
-      - name: Извлечение changelog для текущей версии
-        id: changelog
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          SEMVER=$(echo "$VERSION" | sed 's/^v//')
-          awk "/^## \\[$SEMVER\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md > /tmp/changelog.md
-
       - name: Обновление релиза
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          CHANGELOG=$(cat /tmp/changelog.md)
-          cat > /tmp/release-body.md <<EOF
-          ${CHANGELOG}
-          ### Установка
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.version }}
+          append_body: true
+          body: |
 
-          **Бинарники:**
-          - **Linux x64**: \`xray-health-exporter-linux-amd64\`
-          - **Linux ARM64**: \`xray-health-exporter-linux-arm64\`
-          - **Linux ARM (32-bit)**: \`xray-health-exporter-linux-arm\`
+            ### Установка
 
-          \`\`\`bash
-          chmod +x xray-health-exporter-*
-          export CONFIG_FILE=./config.yaml
-          ./xray-health-exporter-linux-amd64
-          \`\`\`
+            **Бинарники:**
+            - **Linux x64**: `xray-health-exporter-linux-amd64`
+            - **Linux ARM64**: `xray-health-exporter-linux-arm64`
+            - **Linux ARM (32-bit)**: `xray-health-exporter-linux-arm`
 
-          **Docker:**
-          \`\`\`bash
-          docker pull ghcr.io/${REPO}:${VERSION}
-          docker run --rm \\
-            -v \$(pwd)/config.yaml:/app/config.yaml:ro \\
-            -p 9273:9273 \\
-            ghcr.io/${REPO}:${VERSION}
-          \`\`\`
+            ```bash
+            chmod +x xray-health-exporter-*
+            export CONFIG_FILE=./config.yaml
+            ./xray-health-exporter-linux-amd64
+            ```
 
-          Туннели можно задавать тремя способами: VLESS URL, нативный Xray JSON-конфиг (\`xray_config_file\`) и subscription URL.
-          См. [config.example.yaml](https://github.com/${REPO}/blob/main/config.example.yaml) для полного примера конфигурации.
-          EOF
-          sed -i 's/^          //' /tmp/release-body.md
-          gh release edit "$VERSION" --notes-file /tmp/release-body.md
+            **Docker:**
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
+            docker run --rm \
+              -v $(pwd)/config.yaml:/app/config.yaml:ro \
+              -p 9273:9273 \
+              ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
+            ```
 
-      - name: Загрузка артефактов в релиз
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$VERSION" artifacts/*/xray-health-exporter-* --clobber
+            Туннели можно задавать тремя способами: VLESS URL, нативный Xray JSON-конфиг (`xray_config_file`) и subscription URL.
+            См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.
+          files: artifacts/*/xray-health-exporter-*

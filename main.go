@@ -107,11 +107,12 @@ type Defaults struct {
 }
 
 type Tunnel struct {
-	Name          string `yaml:"name"`
-	URL           string `yaml:"url"`
-	CheckURL      string `yaml:"check_url"`
-	CheckInterval string `yaml:"check_interval"`
-	CheckTimeout  string `yaml:"check_timeout"`
+	Name           string `yaml:"name"`
+	URL            string `yaml:"url"`
+	XrayConfigFile string `yaml:"xray_config_file"`
+	CheckURL       string `yaml:"check_url"`
+	CheckInterval  string `yaml:"check_interval"`
+	CheckTimeout   string `yaml:"check_timeout"`
 }
 
 type VLESSConfig struct {
@@ -175,8 +176,14 @@ func loadConfig(configPath string) (*Config, error) {
 	for i := range config.Tunnels {
 		tunnel := &config.Tunnels[i]
 
-		if tunnel.URL == "" {
-			return nil, fmt.Errorf("tunnel %d: url is required", i)
+		hasURL := tunnel.URL != ""
+		hasXrayConfig := tunnel.XrayConfigFile != ""
+
+		if hasURL && hasXrayConfig {
+			return nil, fmt.Errorf("tunnel %d: url and xray_config_file are mutually exclusive", i)
+		}
+		if !hasURL && !hasXrayConfig {
+			return nil, fmt.Errorf("tunnel %d: url or xray_config_file is required", i)
 		}
 
 		// Apply defaults if not specified in tunnel
@@ -651,9 +658,28 @@ func waitForSOCKSPort(port int, timeout time.Duration) error {
 // It collects all validation errors and returns them joined together.
 func (t *Tunnel) Validate() error {
 	var errs []error
-	if _, err := parseVLESSURL(t.URL); err != nil {
-		errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+
+	hasURL := t.URL != ""
+	hasXrayConfig := t.XrayConfigFile != ""
+
+	if hasURL && hasXrayConfig {
+		errs = append(errs, fmt.Errorf("url and xray_config_file are mutually exclusive"))
 	}
+	if !hasURL && !hasXrayConfig {
+		errs = append(errs, fmt.Errorf("url or xray_config_file is required"))
+	}
+
+	if hasURL {
+		if _, err := parseVLESSURL(t.URL); err != nil {
+			errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+		}
+	}
+	if hasXrayConfig {
+		if _, err := os.Stat(t.XrayConfigFile); err != nil {
+			errs = append(errs, fmt.Errorf("xray_config_file not accessible: %v", err))
+		}
+	}
+
 	if _, err := time.ParseDuration(t.CheckInterval); err != nil {
 		errs = append(errs, fmt.Errorf("invalid check_interval: %v", err))
 	}

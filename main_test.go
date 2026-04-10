@@ -326,6 +326,21 @@ tunnels: []`,
 			yaml:    `invalid: yaml: content:`,
 			wantErr: true,
 		},
+		{
+			name: "tunnel with both url and xray_config_file",
+			yaml: `tunnels:
+  - name: "test"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
+    xray_config_file: "/tmp/some.json"`,
+			wantErr: true,
+		},
+		{
+			name: "tunnel without url and xray_config_file",
+			yaml: `tunnels:
+  - name: "test"
+    check_url: "https://example.com"`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -354,6 +369,32 @@ tunnels: []`,
 		_, err := loadConfig("/nonexistent/config.yaml")
 		if err == nil {
 			t.Error("expected error for nonexistent file")
+		}
+	})
+
+	// Test tunnel with xray_config_file (needs a real temp file)
+	t.Run("tunnel with xray_config_file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		if err := os.WriteFile(xrayConfigPath, []byte(`{}`), 0644); err != nil {
+			t.Fatalf("failed to create temp xray config: %v", err)
+		}
+
+		yamlContent := fmt.Sprintf(`tunnels:
+  - name: "xray-tunnel"
+    xray_config_file: %q`, xrayConfigPath)
+
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		if err := os.WriteFile(configFile, []byte(yamlContent), 0644); err != nil {
+			t.Fatalf("failed to create temp config: %v", err)
+		}
+
+		config, err := loadConfig(configFile)
+		if err != nil {
+			t.Fatalf("loadConfig() unexpected error: %v", err)
+		}
+		if config.Tunnels[0].XrayConfigFile != xrayConfigPath {
+			t.Errorf("XrayConfigFile = %v, want %v", config.Tunnels[0].XrayConfigFile, xrayConfigPath)
 		}
 	})
 }
@@ -2261,6 +2302,76 @@ func TestTunnelValidate(t *testing.T) {
 		}
 		if err := tunnel.Validate(); err != nil {
 			t.Errorf("expected no error for http check_url, got: %v", err)
+		}
+	})
+}
+
+func TestTunnelValidate_XrayConfigFile(t *testing.T) {
+	t.Run("valid xray_config_file", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "xray.json")
+		if err := os.WriteFile(tmpFile, []byte(`{}`), 0644); err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		tunnel := Tunnel{
+			Name:           "xray-tunnel",
+			XrayConfigFile: tmpFile,
+			CheckURL:       "https://example.com",
+			CheckInterval:  "30s",
+			CheckTimeout:   "10s",
+		}
+		if err := tunnel.Validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("nonexistent xray_config_file", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:           "bad-xray",
+			XrayConfigFile: "/nonexistent/xray.json",
+			CheckURL:       "https://example.com",
+			CheckInterval:  "30s",
+			CheckTimeout:   "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for nonexistent xray_config_file")
+		}
+		if !strings.Contains(err.Error(), "xray_config_file not accessible") {
+			t.Errorf("expected xray_config_file error, got: %v", err)
+		}
+	})
+
+	t.Run("both url and xray_config_file", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:           "both",
+			URL:            "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			XrayConfigFile: "/tmp/some.json",
+			CheckURL:       "https://example.com",
+			CheckInterval:  "30s",
+			CheckTimeout:   "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for both url and xray_config_file")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("expected mutually exclusive error, got: %v", err)
+		}
+	})
+
+	t.Run("neither url nor xray_config_file", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "neither",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for missing url and xray_config_file")
+		}
+		if !strings.Contains(err.Error(), "url or xray_config_file is required") {
+			t.Errorf("expected required error, got: %v", err)
 		}
 	})
 }

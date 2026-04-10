@@ -1,9 +1,8 @@
 name: Релиз
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -17,13 +16,14 @@ jobs:
     steps:
       - name: Извлечение версии из тега
         id: version
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
           # v1.2.3 -> 1.2
-          SHORT=$(echo "$VERSION" | sed 's/^v//' | cut -d. -f1,2)
+          SHORT=$(echo "$TAG_NAME" | sed 's/^v//' | cut -d. -f1,2)
           echo "version_short=$SHORT" >> $GITHUB_OUTPUT
-          echo "Версия: $VERSION (короткая: $SHORT)"
+          echo "Версия: $TAG_NAME (короткая: $SHORT)"
 
   build:
     needs: version
@@ -120,15 +120,12 @@ jobs:
           name: xray-health-exporter-linux-arm
           path: artifacts/xray-health-exporter-linux-arm
 
-      - name: Создание релиза
+      - name: Обновление релиза
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.version }}
-          name: Релиз ${{ needs.version.outputs.version }}
+          append_body: true
           body: |
-            ## Xray Health Exporter ${{ needs.version.outputs.version }}
-
-            Prometheus exporter для мониторинга множественных VLESS туннелей со встроенным Xray-core.
 
             ### Установка
 
@@ -170,7 +167,4 @@ jobs:
             ```
 
             См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.
-
-            ### Что нового
           files: artifacts/*/xray-health-exporter-*
-          generate_release_notes: true

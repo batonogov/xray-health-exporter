@@ -29,3 +29,9 @@ config.yaml
 # Редакторы/IDE
 # .idea/
 # .vscode/
+
+# Git worktrees
+.worktrees/
+
+# Superpowers plans
+docs/superpowers/

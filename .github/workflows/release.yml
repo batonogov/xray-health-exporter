@@ -135,30 +135,13 @@ jobs:
             - **Linux ARM (32-bit)**: `xray-health-exporter-linux-arm`
 
             ```bash
-            # Скачайте и сделайте исполняемым
             chmod +x xray-health-exporter-*
-
-            # Создайте config.yaml
-            cat > config.yaml <<EOF
-            defaults:
-              check_url: "https://www.google.com"
-              check_interval: "30s"
-              check_timeout: "30s"
-            tunnels:
-              - name: "Server 1"
-                url: "vless://uuid@host:443?..."
-            EOF
-
-            # Запустите
             export CONFIG_FILE=./config.yaml
-            ./xray-health-exporter-*
+            ./xray-health-exporter-linux-amd64
             ```
 
             **Docker:**
             ```bash
-            # Создайте config.yaml (см. выше)
-
-            # Запустите
             docker pull ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             docker run --rm \
               -v $(pwd)/config.yaml:/app/config.yaml:ro \
@@ -166,5 +149,6 @@ jobs:
               ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             ```
 
+            Туннели можно задавать тремя способами: VLESS URL, нативный Xray JSON-конфиг (`xray_config_file`) и subscription URL.
             См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.
           files: artifacts/*/xray-health-exporter-*

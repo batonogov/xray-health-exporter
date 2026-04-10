@@ -2969,3 +2969,46 @@ func TestResolveSubscriptions_NoSubscriptions(t *testing.T) {
 		t.Errorf("expected 0 tunnels, got %d", len(tunnels))
 	}
 }
+
+func TestWatchSubscriptions_NoSubscriptions(t *testing.T) {
+	tm := &TunnelManager{
+		config: &Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Should return immediately since there are no subscriptions
+	done := make(chan struct{})
+	go func() {
+		watchSubscriptions(ctx, tm, "/nonexistent", false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good - returned immediately
+	case <-time.After(1 * time.Second):
+		t.Fatal("watchSubscriptions should return immediately when no subscriptions")
+	}
+}
+
+func TestWatchSubscriptions_NilConfig(t *testing.T) {
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		watchSubscriptions(ctx, tm, "/nonexistent", false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good - returned immediately
+	case <-time.After(1 * time.Second):
+		t.Fatal("watchSubscriptions should return immediately when config is nil")
+	}
+}

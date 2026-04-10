@@ -2903,3 +2903,78 @@ func TestFetchSubscription_InvalidURL(t *testing.T) {
 		t.Error("expected error for unreachable URL")
 	}
 }
+
+func TestResolveSubscriptions(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content := "vless://uuid1@host1.com:443?type=tcp&security=tls&sni=host1.com&fp=chrome#Sub-Server1\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=host2.com&fp=chrome#Sub-Server2"
+		w.Write([]byte(base64Encode(content)))
+	}))
+	defer ts.Close()
+
+	config := &Config{
+		Defaults: Defaults{
+			CheckURL:      "https://example.com",
+			CheckInterval: "1m",
+			CheckTimeout:  "10s",
+		},
+		Subscriptions: []Subscription{
+			{URL: ts.URL, UpdateInterval: "1h"},
+		},
+	}
+
+	tunnels, err := resolveSubscriptions(config)
+	if err != nil {
+		t.Fatalf("resolveSubscriptions() error = %v", err)
+	}
+
+	if len(tunnels) != 2 {
+		t.Fatalf("expected 2 tunnels, got %d", len(tunnels))
+	}
+
+	if tunnels[0].Name != "Sub-Server1" {
+		t.Errorf("tunnel[0].Name = %v, want Sub-Server1", tunnels[0].Name)
+	}
+
+	// Check defaults applied
+	if tunnels[0].CheckURL != "https://example.com" {
+		t.Errorf("tunnel[0].CheckURL = %v, want https://example.com", tunnels[0].CheckURL)
+	}
+	if tunnels[0].CheckInterval != "1m" {
+		t.Errorf("tunnel[0].CheckInterval = %v, want 1m", tunnels[0].CheckInterval)
+	}
+	if tunnels[0].CheckTimeout != "10s" {
+		t.Errorf("tunnel[0].CheckTimeout = %v, want 10s", tunnels[0].CheckTimeout)
+	}
+}
+
+func TestResolveSubscriptions_FailedSubscription(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	config := &Config{
+		Subscriptions: []Subscription{
+			{URL: ts.URL, UpdateInterval: "1h"},
+		},
+	}
+
+	tunnels, err := resolveSubscriptions(config)
+	if err != nil {
+		t.Fatalf("resolveSubscriptions() should not return error, got %v", err)
+	}
+	if len(tunnels) != 0 {
+		t.Errorf("expected 0 tunnels from failed subscription, got %d", len(tunnels))
+	}
+}
+
+func TestResolveSubscriptions_NoSubscriptions(t *testing.T) {
+	config := &Config{}
+	tunnels, err := resolveSubscriptions(config)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(tunnels) != 0 {
+		t.Errorf("expected 0 tunnels, got %d", len(tunnels))
+	}
+}

@@ -161,6 +161,7 @@ type TunnelManager struct {
 	mu            sync.RWMutex
 	instances     []*TunnelInstance
 	nextSocksPort int
+	config        *Config
 }
 
 func loadConfig(configPath string) (*Config, error) {
@@ -288,6 +289,45 @@ func fetchSubscription(subURL string) ([]Tunnel, error) {
 	}
 
 	return tunnels, nil
+}
+
+func resolveSubscriptions(config *Config) ([]Tunnel, error) {
+	var allTunnels []Tunnel
+
+	for i, sub := range config.Subscriptions {
+		tunnels, err := fetchSubscription(sub.URL)
+		if err != nil {
+			log.Printf("Failed to fetch subscription %d (%s): %v", i, sub.URL, err)
+			continue
+		}
+
+		// Apply defaults to each tunnel from subscription
+		for j := range tunnels {
+			if tunnels[j].CheckURL == "" {
+				tunnels[j].CheckURL = config.Defaults.CheckURL
+			}
+			if tunnels[j].CheckInterval == "" {
+				tunnels[j].CheckInterval = config.Defaults.CheckInterval
+			}
+			if tunnels[j].CheckTimeout == "" {
+				tunnels[j].CheckTimeout = config.Defaults.CheckTimeout
+			}
+			if tunnels[j].CheckURL == "" {
+				tunnels[j].CheckURL = defaultCheckURL
+			}
+			if tunnels[j].CheckInterval == "" {
+				tunnels[j].CheckInterval = defaultCheckInterval.String()
+			}
+			if tunnels[j].CheckTimeout == "" {
+				tunnels[j].CheckTimeout = defaultTimeout.String()
+			}
+		}
+
+		log.Printf("Subscription %d: fetched %d tunnels", i, len(tunnels))
+		allTunnels = append(allTunnels, tunnels...)
+	}
+
+	return allTunnels, nil
 }
 
 func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {
@@ -1005,6 +1045,15 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
+	// Resolve subscriptions
+	subTunnels, _ := resolveSubscriptions(newConfig)
+	newConfig.Tunnels = append(newConfig.Tunnels, subTunnels...)
+
+	if len(newConfig.Tunnels) == 0 {
+		log.Printf("No tunnels after resolving subscriptions, keeping current config")
+		return fmt.Errorf("no tunnels to initialize")
+	}
+
 	// Validate all tunnels before attempting to start new ones
 	if err := validateTunnels(newConfig); err != nil {
 		log.Printf("Config validation failed, keeping current tunnels: %v", err)
@@ -1027,6 +1076,7 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	oldInstances := tm.instances
 	tm.instances = newInstances
 	tm.nextSocksPort = newBasePort + len(newInstances)
+	tm.config = newConfig
 	tm.mu.Unlock()
 
 	stopTunnels(oldInstances)
@@ -1180,6 +1230,41 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 	}
 }
 
+func watchSubscriptions(ctx context.Context, tm *TunnelManager, configFile string, debug bool) {
+	tm.mu.RLock()
+	config := tm.config
+	tm.mu.RUnlock()
+
+	if config == nil || len(config.Subscriptions) == 0 {
+		return
+	}
+
+	// Find minimum update interval
+	minInterval := 1 * time.Hour
+	for _, sub := range config.Subscriptions {
+		d, err := time.ParseDuration(sub.UpdateInterval)
+		if err == nil && d < minInterval {
+			minInterval = d
+		}
+	}
+
+	ticker := time.NewTicker(minInterval)
+	defer ticker.Stop()
+
+	log.Printf("Subscription watcher started (interval: %v)", minInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := tm.reloadConfig(configFile, debug); err != nil {
+				log.Printf("Subscription reload failed: %v", err)
+			}
+		}
+	}
+}
+
 func main() {
 	log.Printf("xray-health-exporter %s", Version)
 
@@ -1202,6 +1287,14 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Resolve subscriptions at startup
+	subTunnels, _ := resolveSubscriptions(config)
+	config.Tunnels = append(config.Tunnels, subTunnels...)
+
+	if len(config.Tunnels) == 0 {
+		log.Fatalf("No tunnels to initialize (including subscriptions)")
+	}
+
 	if debug {
 		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
 	}
@@ -1221,6 +1314,7 @@ func main() {
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
 	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
+	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 
 	// Cleanup on exit
@@ -1236,6 +1330,9 @@ func main() {
 			log.Printf("File watcher stopped: %v", err)
 		}
 	}()
+
+	// Start subscription watcher
+	go watchSubscriptions(ctx, tunnelManager, configFile, debug)
 
 	// HTTP server for metrics
 	mux := http.NewServeMux()

@@ -2922,10 +2922,7 @@ func TestResolveSubscriptions(t *testing.T) {
 		},
 	}
 
-	tunnels, err := resolveSubscriptions(config)
-	if err != nil {
-		t.Fatalf("resolveSubscriptions() error = %v", err)
-	}
+	tunnels := resolveSubscriptions(config)
 
 	if len(tunnels) != 2 {
 		t.Fatalf("expected 2 tunnels, got %d", len(tunnels))
@@ -2959,10 +2956,7 @@ func TestResolveSubscriptions_FailedSubscription(t *testing.T) {
 		},
 	}
 
-	tunnels, err := resolveSubscriptions(config)
-	if err != nil {
-		t.Fatalf("resolveSubscriptions() should not return error, got %v", err)
-	}
+	tunnels := resolveSubscriptions(config)
 	if len(tunnels) != 0 {
 		t.Errorf("expected 0 tunnels from failed subscription, got %d", len(tunnels))
 	}
@@ -2970,10 +2964,7 @@ func TestResolveSubscriptions_FailedSubscription(t *testing.T) {
 
 func TestResolveSubscriptions_NoSubscriptions(t *testing.T) {
 	config := &Config{}
-	tunnels, err := resolveSubscriptions(config)
-	if err != nil {
-		t.Fatalf("error: %v", err)
-	}
+	tunnels := resolveSubscriptions(config)
 	if len(tunnels) != 0 {
 		t.Errorf("expected 0 tunnels, got %d", len(tunnels))
 	}

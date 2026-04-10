@@ -245,7 +245,7 @@ func fetchSubscription(subURL string) ([]Tunnel, error) {
 		return nil, fmt.Errorf("subscription returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max
 	if err != nil {
 		return nil, fmt.Errorf("failed to read subscription response: %v", err)
 	}
@@ -255,14 +255,19 @@ func fetchSubscription(subURL string) ([]Tunnel, error) {
 		return nil, nil
 	}
 
-	// Try to decode as base64
+	// Try to decode as base64 (with and without padding)
 	decoded, err := base64.StdEncoding.DecodeString(content)
 	if err != nil {
-		// Try URL-safe base64
-		decoded, err = base64.URLEncoding.DecodeString(content)
+		decoded, err = base64.RawStdEncoding.DecodeString(content)
 		if err != nil {
-			// Not base64 — use as plain text
-			decoded = []byte(content)
+			decoded, err = base64.URLEncoding.DecodeString(content)
+			if err != nil {
+				decoded, err = base64.RawURLEncoding.DecodeString(content)
+				if err != nil {
+					// Not base64 — use as plain text
+					decoded = []byte(content)
+				}
+			}
 		}
 	}
 
@@ -291,7 +296,7 @@ func fetchSubscription(subURL string) ([]Tunnel, error) {
 	return tunnels, nil
 }
 
-func resolveSubscriptions(config *Config) ([]Tunnel, error) {
+func resolveSubscriptions(config *Config) []Tunnel {
 	var allTunnels []Tunnel
 
 	for i, sub := range config.Subscriptions {
@@ -327,7 +332,7 @@ func resolveSubscriptions(config *Config) ([]Tunnel, error) {
 		allTunnels = append(allTunnels, tunnels...)
 	}
 
-	return allTunnels, nil
+	return allTunnels
 }
 
 func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {
@@ -1046,7 +1051,7 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	}
 
 	// Resolve subscriptions
-	subTunnels, _ := resolveSubscriptions(newConfig)
+	subTunnels := resolveSubscriptions(newConfig)
 	newConfig.Tunnels = append(newConfig.Tunnels, subTunnels...)
 
 	if len(newConfig.Tunnels) == 0 {
@@ -1288,7 +1293,7 @@ func main() {
 	}
 
 	// Resolve subscriptions at startup
-	subTunnels, _ := resolveSubscriptions(config)
+	subTunnels := resolveSubscriptions(config)
 	config.Tunnels = append(config.Tunnels, subTunnels...)
 
 	if len(config.Tunnels) == 0 {

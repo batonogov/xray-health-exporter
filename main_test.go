@@ -2201,7 +2201,7 @@ func TestTunnelValidate(t *testing.T) {
 	t.Run("invalid VLESS URL", func(t *testing.T) {
 		tunnel := Tunnel{
 			Name:          "bad-url",
-			URL:           "not-a-vless-url",
+			URL:           "vless://bad-url-no-port",
 			CheckURL:      "https://example.com",
 			CheckInterval: "30s",
 			CheckTimeout:  "10s",
@@ -2212,6 +2212,19 @@ func TestTunnelValidate(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "invalid VLESS URL") {
 			t.Errorf("expected VLESS URL error, got: %v", err)
+		}
+	})
+
+	t.Run("non-VLESS URL is accepted", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "ss-url",
+			URL:           "ss://some-data@example.com:8388",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		if err := tunnel.Validate(); err != nil {
+			t.Errorf("expected no error for non-VLESS URL, got: %v", err)
 		}
 	})
 
@@ -2269,7 +2282,7 @@ func TestTunnelValidate(t *testing.T) {
 	t.Run("multiple errors at once", func(t *testing.T) {
 		tunnel := Tunnel{
 			Name:          "all-bad",
-			URL:           "not-a-vless-url",
+			URL:           "vless://bad-url-no-port",
 			CheckURL:      "ftp://bad",
 			CheckInterval: "bad-interval",
 			CheckTimeout:  "bad-timeout",
@@ -2400,14 +2413,14 @@ func TestValidateTunnels(t *testing.T) {
 			Tunnels: []Tunnel{
 				{
 					Name:          "bad1",
-					URL:           "not-a-vless-url",
+					URL:           "vless://bad-url-no-port",
 					CheckURL:      "https://example.com",
 					CheckInterval: "30s",
 					CheckTimeout:  "10s",
 				},
 				{
 					Name:          "bad2",
-					URL:           "http://also-not-vless",
+					URL:           "vless://also-bad-no-port",
 					CheckURL:      "https://example.com",
 					CheckInterval: "30s",
 					CheckTimeout:  "10s",
@@ -2439,7 +2452,7 @@ func TestValidateTunnels(t *testing.T) {
 				},
 				{
 					Name:          "bad",
-					URL:           "http://not-vless",
+					URL:           "vless://bad-url-no-port",
 					CheckURL:      "https://example.com",
 					CheckInterval: "30s",
 					CheckTimeout:  "10s",
@@ -2468,7 +2481,7 @@ func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
 	// Write invalid config
 	invalidConfig := `tunnels:
   - name: "bad"
-    url: "not-a-vless-url"
+    url: "vless://bad-url-no-port"
     check_interval: "30s"
     check_timeout: "10s"`
 

@@ -306,6 +306,17 @@ func resolveSubscriptions(config *Config) []Tunnel {
 			continue
 		}
 
+		// Filter to only supported protocols (VLESS URLs)
+		var supported []Tunnel
+		for _, t := range tunnels {
+			if strings.HasPrefix(t.URL, "vless://") {
+				supported = append(supported, t)
+			} else {
+				log.Printf("Subscription %d: skipping unsupported URL scheme: %s", i, t.Name)
+			}
+		}
+		tunnels = supported
+
 		// Apply defaults to each tunnel from subscription
 		for j := range tunnels {
 			if tunnels[j].CheckURL == "" {
@@ -770,6 +781,16 @@ func checkTunnel(ti *TunnelInstance) {
 		"sni":      ti.MetricLabels.SNI,
 	}
 
+	resultLabels := func(result string) prometheus.Labels {
+		return prometheus.Labels{
+			"name":     ti.Name,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
+			"result":   result,
+		}
+	}
+
 	socksProxy := fmt.Sprintf("127.0.0.1:%d", ti.SocksPort)
 
 	// Сначала проверим что SOCKS5 прокси вообще работает
@@ -777,13 +798,7 @@ func checkTunnel(ti *TunnelInstance) {
 	if err != nil {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(prometheus.Labels{
-			"name":     ti.Name,
-			"server":   ti.MetricLabels.Server,
-			"security": ti.MetricLabels.Security,
-			"sni":      ti.MetricLabels.SNI,
-			"result":   "failure",
-		}).Inc()
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
 	}
 	conn.Close()
@@ -805,13 +820,7 @@ func checkTunnel(ti *TunnelInstance) {
 	if err != nil {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(prometheus.Labels{
-			"name":     ti.Name,
-			"server":   ti.MetricLabels.Server,
-			"security": ti.MetricLabels.Security,
-			"sni":      ti.MetricLabels.SNI,
-			"result":   "failure",
-		}).Inc()
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
 	}
 	defer resp.Body.Close()
@@ -822,13 +831,7 @@ func checkTunnel(ti *TunnelInstance) {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusTemporaryRedirect {
 		log.Printf("[%s] ✗ Tunnel DOWN: status %d", ti.Name, resp.StatusCode)
 		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(prometheus.Labels{
-			"name":     ti.Name,
-			"server":   ti.MetricLabels.Server,
-			"security": ti.MetricLabels.Security,
-			"sni":      ti.MetricLabels.SNI,
-			"result":   "failure",
-		}).Inc()
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
 	}
 
@@ -849,13 +852,7 @@ func checkTunnel(ti *TunnelInstance) {
 		tunnelLatency.With(labels).Set(duration.Seconds())
 	}
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
-	tunnelCheckTotal.With(prometheus.Labels{
-		"name":     ti.Name,
-		"server":   ti.MetricLabels.Server,
-		"security": ti.MetricLabels.Security,
-		"sni":      ti.MetricLabels.SNI,
-		"result":   "success",
-	}).Inc()
+	tunnelCheckTotal.With(resultLabels("success")).Inc()
 }
 
 func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
@@ -906,8 +903,14 @@ func (t *Tunnel) Validate() error {
 	}
 
 	if hasURL {
-		if _, err := parseVLESSURL(t.URL); err != nil {
-			errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+		if strings.HasPrefix(t.URL, "vless://") {
+			if _, err := parseVLESSURL(t.URL); err != nil {
+				errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+			}
+		} else {
+			if _, err := url.Parse(t.URL); err != nil {
+				errs = append(errs, fmt.Errorf("invalid URL: %v", err))
+			}
 		}
 	}
 	if hasXrayConfig {

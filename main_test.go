@@ -3025,3 +3025,235 @@ func TestWatchSubscriptions_NilConfig(t *testing.T) {
 		t.Fatal("watchSubscriptions should return immediately when config is nil")
 	}
 }
+
+func TestApplyTunnelDefaults(t *testing.T) {
+	t.Run("fallback to global defaults when Defaults empty", func(t *testing.T) {
+		tunnel := &Tunnel{}
+		applyTunnelDefaults(tunnel, Defaults{})
+
+		if tunnel.CheckURL != defaultCheckURL {
+			t.Errorf("CheckURL = %v, want %v", tunnel.CheckURL, defaultCheckURL)
+		}
+		if tunnel.CheckInterval != defaultCheckInterval.String() {
+			t.Errorf("CheckInterval = %v, want %v", tunnel.CheckInterval, defaultCheckInterval.String())
+		}
+		if tunnel.CheckTimeout != defaultTimeout.String() {
+			t.Errorf("CheckTimeout = %v, want %v", tunnel.CheckTimeout, defaultTimeout.String())
+		}
+	})
+
+	t.Run("config defaults take priority over globals", func(t *testing.T) {
+		tunnel := &Tunnel{}
+		applyTunnelDefaults(tunnel, Defaults{
+			CheckURL:      "https://custom.com",
+			CheckInterval: "2m",
+			CheckTimeout:  "15s",
+		})
+
+		if tunnel.CheckURL != "https://custom.com" {
+			t.Errorf("CheckURL = %v, want https://custom.com", tunnel.CheckURL)
+		}
+		if tunnel.CheckInterval != "2m" {
+			t.Errorf("CheckInterval = %v, want 2m", tunnel.CheckInterval)
+		}
+		if tunnel.CheckTimeout != "15s" {
+			t.Errorf("CheckTimeout = %v, want 15s", tunnel.CheckTimeout)
+		}
+	})
+
+	t.Run("tunnel values not overwritten", func(t *testing.T) {
+		tunnel := &Tunnel{
+			CheckURL:      "https://mine.com",
+			CheckInterval: "5m",
+			CheckTimeout:  "20s",
+		}
+		applyTunnelDefaults(tunnel, Defaults{
+			CheckURL:      "https://default.com",
+			CheckInterval: "1m",
+			CheckTimeout:  "10s",
+		})
+
+		if tunnel.CheckURL != "https://mine.com" {
+			t.Errorf("CheckURL = %v, want https://mine.com", tunnel.CheckURL)
+		}
+		if tunnel.CheckInterval != "5m" {
+			t.Errorf("CheckInterval = %v, want 5m", tunnel.CheckInterval)
+		}
+		if tunnel.CheckTimeout != "20s" {
+			t.Errorf("CheckTimeout = %v, want 20s", tunnel.CheckTimeout)
+		}
+	})
+}
+
+func TestResolveSubscriptions_FiltersNonVLESS(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content := "vless://uuid@host.com:443?type=tcp&security=tls&sni=host.com&fp=chrome#VLESS-Server\nss://data@host2.com:8388#SS-Server\ntrojan://pwd@host3.com:443#Trojan-Server\nvmess://base64data#VMess-Server"
+		w.Write([]byte(base64Encode(content)))
+	}))
+	defer ts.Close()
+
+	config := &Config{
+		Subscriptions: []Subscription{{URL: ts.URL, UpdateInterval: "1h"}},
+	}
+
+	tunnels := resolveSubscriptions(config)
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 VLESS tunnel, got %d", len(tunnels))
+	}
+	if tunnels[0].Name != "VLESS-Server" {
+		t.Errorf("tunnel[0].Name = %v, want VLESS-Server", tunnels[0].Name)
+	}
+}
+
+func TestResolveSubscriptions_MultipleWithPartialFailure(t *testing.T) {
+	goodServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(base64Encode("vless://uuid@host.com:443?type=tcp&security=tls&sni=h.com&fp=chrome#Good")))
+	}))
+	defer goodServer.Close()
+
+	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer badServer.Close()
+
+	config := &Config{
+		Subscriptions: []Subscription{
+			{URL: goodServer.URL, UpdateInterval: "1h"},
+			{URL: badServer.URL, UpdateInterval: "1h"},
+			{URL: goodServer.URL, UpdateInterval: "1h"},
+		},
+	}
+
+	tunnels := resolveSubscriptions(config)
+	if len(tunnels) != 2 {
+		t.Errorf("expected 2 tunnels from 2 good subscriptions, got %d", len(tunnels))
+	}
+}
+
+func TestFetchSubscription_Base64RawEncoding(t *testing.T) {
+	content := "vless://uuid@host.com:443?type=tcp&security=tls&sni=host.com&fp=chrome#RawServer"
+	// RawStdEncoding = base64 without padding (no '=' suffix)
+	encoded := base64.RawStdEncoding.EncodeToString([]byte(content))
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(encoded))
+	}))
+	defer ts.Close()
+
+	tunnels, err := fetchSubscription(ts.URL)
+	if err != nil {
+		t.Fatalf("fetchSubscription() error = %v", err)
+	}
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel, got %d", len(tunnels))
+	}
+	if tunnels[0].Name != "RawServer" {
+		t.Errorf("Name = %v, want RawServer", tunnels[0].Name)
+	}
+}
+
+func TestFetchSubscription_NameFromHostWhenNoFragment(t *testing.T) {
+	content := "vless://uuid@myserver.com:8443?type=tcp&security=tls&sni=myserver.com&fp=chrome"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(content))
+	}))
+	defer ts.Close()
+
+	tunnels, err := fetchSubscription(ts.URL)
+	if err != nil {
+		t.Fatalf("fetchSubscription() error = %v", err)
+	}
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel, got %d", len(tunnels))
+	}
+	// Without #fragment, name should come from host
+	if tunnels[0].Name == "" {
+		t.Error("expected non-empty name from host:port")
+	}
+}
+
+func TestLoadXrayConfigFile_OverwritesUserInbounds(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "xray.json")
+	// Config with user-defined inbounds that should be replaced
+	config := `{"inbounds":[{"port":12345,"protocol":"http"}],"outbounds":[{"protocol":"freedom"}]}`
+	os.WriteFile(path, []byte(config), 0644)
+
+	data, _, err := loadXrayConfigFile(path, 3080)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(data, &result)
+
+	inbounds := result["inbounds"].([]interface{})
+	if len(inbounds) != 1 {
+		t.Fatalf("expected 1 inbound (SOCKS), got %d", len(inbounds))
+	}
+	inbound := inbounds[0].(map[string]interface{})
+	if inbound["protocol"] != "socks" {
+		t.Errorf("protocol = %v, want socks (user inbounds should be replaced)", inbound["protocol"])
+	}
+	if inbound["port"].(float64) != 3080 {
+		t.Errorf("port = %v, want 3080", inbound["port"])
+	}
+}
+
+func TestInitTunnel_XrayConfigFile_AutoName(t *testing.T) {
+	tmpDir := t.TempDir()
+	xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+
+	xrayJSON := `{
+		"outbounds": [{
+			"protocol": "vless",
+			"settings": {"vnext": [{"address": "auto.example.com", "port": 443, "users": [{"id": "uuid", "encryption": "none"}]}]},
+			"streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"serverName": "auto.example.com"}}
+		}]
+	}`
+	os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+	// No Name set — should auto-generate from MetricLabels.Server
+	tunnel := &Tunnel{
+		XrayConfigFile: xrayConfigPath,
+		CheckURL:       "https://example.com",
+		CheckInterval:  "30s",
+		CheckTimeout:   "10s",
+	}
+
+	ti, err := initTunnel(tunnel, 11090, false)
+	if err != nil {
+		t.Fatalf("initTunnel() error = %v", err)
+	}
+	defer ti.XrayInstance.Close()
+
+	if ti.Name != "auto.example.com:443" {
+		t.Errorf("Name = %v, want auto.example.com:443", ti.Name)
+	}
+}
+
+func TestInitTunnel_XrayConfigFile_FallbackName(t *testing.T) {
+	tmpDir := t.TempDir()
+	xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+
+	// Config without parseable server address — name should fallback to port-based
+	xrayJSON := `{"outbounds": [{"protocol": "freedom"}]}`
+	os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+	tunnel := &Tunnel{
+		XrayConfigFile: xrayConfigPath,
+		CheckURL:       "https://example.com",
+		CheckInterval:  "30s",
+		CheckTimeout:   "10s",
+	}
+
+	ti, err := initTunnel(tunnel, 11091, false)
+	if err != nil {
+		t.Fatalf("initTunnel() error = %v", err)
+	}
+	defer ti.XrayInstance.Close()
+
+	if ti.Name != "tunnel-port-11091" {
+		t.Errorf("Name = %v, want tunnel-port-11091", ti.Name)
+	}
+}

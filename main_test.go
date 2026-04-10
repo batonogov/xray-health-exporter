@@ -2680,3 +2680,49 @@ func TestInitTunnel_XrayConfigFile(t *testing.T) {
 		t.Errorf("MetricLabels.SNI = %v, want example.com", ti.MetricLabels.SNI)
 	}
 }
+
+func TestExtractMetricLabelsFromXrayConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want MetricLabels
+	}{
+		{
+			name: "vless outbound with reality",
+			json: `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443}]},"streamSettings":{"security":"reality","realitySettings":{"serverName":"google.com"}}}]}`,
+			want: MetricLabels{Server: "example.com:443", Security: "reality", SNI: "google.com"},
+		},
+		{
+			name: "trojan outbound with tls",
+			json: `{"outbounds":[{"protocol":"trojan","settings":{"servers":[{"address":"trojan.example.com","port":8443}]},"streamSettings":{"security":"tls","tlsSettings":{"serverName":"trojan.example.com"}}}]}`,
+			want: MetricLabels{Server: "trojan.example.com:8443", Security: "tls", SNI: "trojan.example.com"},
+		},
+		{
+			name: "empty outbounds",
+			json: `{"outbounds":[]}`,
+			want: MetricLabels{},
+		},
+		{
+			name: "no outbounds",
+			json: `{}`,
+			want: MetricLabels{},
+		},
+		{
+			name: "outbound without settings",
+			json: `{"outbounds":[{"protocol":"freedom"}]}`,
+			want: MetricLabels{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			json.Unmarshal([]byte(tt.json), &raw)
+
+			got := extractMetricLabelsFromXrayConfig(raw)
+			if got != tt.want {
+				t.Errorf("extractMetricLabelsFromXrayConfig() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

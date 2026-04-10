@@ -127,9 +127,19 @@ type VLESSConfig struct {
 	Type     string
 }
 
+// MetricLabels holds protocol-agnostic labels for Prometheus metrics.
+// Populated from VLESSConfig for VLESS tunnels; will be populated
+// from xray_config_file metadata for raw-config tunnels.
+type MetricLabels struct {
+	Server   string
+	Security string
+	SNI      string
+}
+
 type TunnelInstance struct {
 	Name          string
-	VLESSConfig   *VLESSConfig
+	VLESSConfig   *VLESSConfig // nil for xray_config_file tunnels
+	MetricLabels  MetricLabels
 	XrayInstance  *core.Instance
 	SocksPort     int
 	CheckURL      string
@@ -388,9 +398,16 @@ func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, err
 		name = fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port)
 	}
 
+	metricLabels := MetricLabels{
+		Server:   fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port),
+		Security: vlessConfig.Security,
+		SNI:      vlessConfig.SNI,
+	}
+
 	return &TunnelInstance{
 		Name:          name,
 		VLESSConfig:   vlessConfig,
+		MetricLabels:  metricLabels,
 		XrayInstance:  xrayInstance,
 		SocksPort:     socksPort,
 		CheckURL:      tunnel.CheckURL,
@@ -503,12 +520,11 @@ func checkTunnel(ti *TunnelInstance) {
 	start := time.Now()
 
 	// Labels для метрик
-	serverLabel := fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port)
 	labels := prometheus.Labels{
 		"name":     ti.Name,
-		"server":   serverLabel,
-		"security": ti.VLESSConfig.Security,
-		"sni":      ti.VLESSConfig.SNI,
+		"server":   ti.MetricLabels.Server,
+		"security": ti.MetricLabels.Security,
+		"sni":      ti.MetricLabels.SNI,
 	}
 
 	socksProxy := fmt.Sprintf("127.0.0.1:%d", ti.SocksPort)
@@ -520,9 +536,9 @@ func checkTunnel(ti *TunnelInstance) {
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(prometheus.Labels{
 			"name":     ti.Name,
-			"server":   serverLabel,
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
 			"result":   "failure",
 		}).Inc()
 		return
@@ -548,9 +564,9 @@ func checkTunnel(ti *TunnelInstance) {
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(prometheus.Labels{
 			"name":     ti.Name,
-			"server":   serverLabel,
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
 			"result":   "failure",
 		}).Inc()
 		return
@@ -565,9 +581,9 @@ func checkTunnel(ti *TunnelInstance) {
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(prometheus.Labels{
 			"name":     ti.Name,
-			"server":   serverLabel,
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
 			"result":   "failure",
 		}).Inc()
 		return
@@ -592,9 +608,9 @@ func checkTunnel(ti *TunnelInstance) {
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
 	tunnelCheckTotal.With(prometheus.Labels{
 		"name":     ti.Name,
-		"server":   serverLabel,
-		"security": ti.VLESSConfig.Security,
-		"sni":      ti.VLESSConfig.SNI,
+		"server":   ti.MetricLabels.Server,
+		"security": ti.MetricLabels.Security,
+		"sni":      ti.MetricLabels.SNI,
 		"result":   "success",
 	}).Inc()
 }
@@ -691,8 +707,8 @@ func initializeTunnels(config *Config, debug bool, baseSocksPort int) ([]*Tunnel
 
 		tunnelInstances = append(tunnelInstances, ti)
 
-		log.Printf("Started tunnel [%s] → %s:%d [%s] on SOCKS port %d",
-			ti.Name, ti.VLESSConfig.Address, ti.VLESSConfig.Port, ti.VLESSConfig.Security, socksPort)
+		log.Printf("Started tunnel [%s] → %s [%s] on SOCKS port %d",
+			ti.Name, ti.MetricLabels.Server, ti.MetricLabels.Security, socksPort)
 	}
 
 	// Wait for all SOCKS ports to become ready
@@ -725,12 +741,11 @@ func stopTunnels(instances []*TunnelInstance) {
 }
 
 func tunnelMetricLabels(ti *TunnelInstance) []string {
-	serverLabel := fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port)
 	return []string{
 		ti.Name,
-		serverLabel,
-		ti.VLESSConfig.Security,
-		ti.VLESSConfig.SNI,
+		ti.MetricLabels.Server,
+		ti.MetricLabels.Security,
+		ti.MetricLabels.SNI,
 	}
 }
 

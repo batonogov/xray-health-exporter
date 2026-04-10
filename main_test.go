@@ -532,6 +532,11 @@ func TestCheckTunnel(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
 		SocksPort:     socksPort,
 		CheckURL:      ts.URL,
 		CheckTimeout:  5 * time.Second,
@@ -659,9 +664,8 @@ tunnels:
 func TestTunnelMetricLabels(t *testing.T) {
 	ti := &TunnelInstance{
 		Name: "metrics-test",
-		VLESSConfig: &VLESSConfig{
-			Address:  "example.com",
-			Port:     443,
+		MetricLabels: MetricLabels{
+			Server:   "example.com:443",
 			Security: "tls",
 			SNI:      "example.com",
 		},
@@ -695,9 +699,8 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 
 	removed := &TunnelInstance{
 		Name: "removed",
-		VLESSConfig: &VLESSConfig{
-			Address:  "removed.example.com",
-			Port:     1443,
+		MetricLabels: MetricLabels{
+			Server:   "removed.example.com:1443",
 			Security: "reality",
 			SNI:      "google.com",
 		},
@@ -705,9 +708,8 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 
 	kept := &TunnelInstance{
 		Name: "kept",
-		VLESSConfig: &VLESSConfig{
-			Address:  "kept.example.com",
-			Port:     2443,
+		MetricLabels: MetricLabels{
+			Server:   "kept.example.com:2443",
 			Security: "tls",
 			SNI:      "kept.example.com",
 		},
@@ -715,9 +717,8 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 
 	newInstance := &TunnelInstance{
 		Name: "new",
-		VLESSConfig: &VLESSConfig{
-			Address:  "new.example.com",
-			Port:     3443,
+		MetricLabels: MetricLabels{
+			Server:   "new.example.com:3443",
 			Security: "tls",
 			SNI:      "new.example.com",
 		},
@@ -726,9 +727,9 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 	populateMetrics := func(ti *TunnelInstance) {
 		labelVals := prometheus.Labels{
 			"name":     ti.Name,
-			"server":   fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port),
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
 		}
 		tunnelUp.With(labelVals).Set(1)
 		tunnelLatency.With(labelVals).Set(0.2)
@@ -904,6 +905,10 @@ func TestStopTunnels(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "test.com",
 			Port:     443,
+			Security: "tls",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "test.com:443",
 			Security: "tls",
 		},
 		SocksPort: 1080,
@@ -1198,6 +1203,11 @@ func TestCheckTunnel_Timeout(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
 		SocksPort:     socksPort,
 		CheckURL:      ts.URL,
 		CheckTimeout:  1 * time.Second, // Короткий timeout
@@ -1295,6 +1305,11 @@ func TestCheckTunnel_BadStatusCodes(t *testing.T) {
 					Security: "tls",
 					SNI:      "test.example.com",
 				},
+				MetricLabels: MetricLabels{
+					Server:   "test.example.com:443",
+					Security: "tls",
+					SNI:      "test.example.com",
+				},
 				SocksPort:     socksPort,
 				CheckURL:      ts.URL,
 				CheckTimeout:  5 * time.Second,
@@ -1363,6 +1378,11 @@ func TestCheckTunnel_DNSError(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "nonexistent.invalid.domain.example",
 			Port:     443,
+			Security: "tls",
+			SNI:      "nonexistent.invalid.domain.example",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "nonexistent.invalid.domain.example:443",
 			Security: "tls",
 			SNI:      "nonexistent.invalid.domain.example",
 		},
@@ -1443,6 +1463,11 @@ func TestCheckTunnel_TLSError(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
 		SocksPort:     socksPort,
 		CheckURL:      "https://test.example.com",
 		CheckTimeout:  5 * time.Second,
@@ -1517,6 +1542,11 @@ func TestRunTunnelChecker(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "test.example.com",
 			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
@@ -1610,6 +1640,11 @@ func TestRunTunnelChecker_Context(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "test.example.com",
 			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
@@ -2335,6 +2370,11 @@ func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "example.com",
 			Port:     443,
+			Security: "tls",
+			SNI:      "test.com",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "example.com:443",
 			Security: "tls",
 			SNI:      "test.com",
 		},

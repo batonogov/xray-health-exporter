@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -326,6 +327,21 @@ tunnels: []`,
 			yaml:    `invalid: yaml: content:`,
 			wantErr: true,
 		},
+		{
+			name: "tunnel with both url and xray_config_file",
+			yaml: `tunnels:
+  - name: "test"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
+    xray_config_file: "/tmp/some.json"`,
+			wantErr: true,
+		},
+		{
+			name: "tunnel without url and xray_config_file",
+			yaml: `tunnels:
+  - name: "test"
+    check_url: "https://example.com"`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -354,6 +370,32 @@ tunnels: []`,
 		_, err := loadConfig("/nonexistent/config.yaml")
 		if err == nil {
 			t.Error("expected error for nonexistent file")
+		}
+	})
+
+	// Test tunnel with xray_config_file (needs a real temp file)
+	t.Run("tunnel with xray_config_file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		if err := os.WriteFile(xrayConfigPath, []byte(`{}`), 0644); err != nil {
+			t.Fatalf("failed to create temp xray config: %v", err)
+		}
+
+		yamlContent := fmt.Sprintf(`tunnels:
+  - name: "xray-tunnel"
+    xray_config_file: %q`, xrayConfigPath)
+
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		if err := os.WriteFile(configFile, []byte(yamlContent), 0644); err != nil {
+			t.Fatalf("failed to create temp config: %v", err)
+		}
+
+		config, err := loadConfig(configFile)
+		if err != nil {
+			t.Fatalf("loadConfig() unexpected error: %v", err)
+		}
+		if config.Tunnels[0].XrayConfigFile != xrayConfigPath {
+			t.Errorf("XrayConfigFile = %v, want %v", config.Tunnels[0].XrayConfigFile, xrayConfigPath)
 		}
 	})
 }
@@ -532,6 +574,11 @@ func TestCheckTunnel(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
 		SocksPort:     socksPort,
 		CheckURL:      ts.URL,
 		CheckTimeout:  5 * time.Second,
@@ -659,9 +706,8 @@ tunnels:
 func TestTunnelMetricLabels(t *testing.T) {
 	ti := &TunnelInstance{
 		Name: "metrics-test",
-		VLESSConfig: &VLESSConfig{
-			Address:  "example.com",
-			Port:     443,
+		MetricLabels: MetricLabels{
+			Server:   "example.com:443",
 			Security: "tls",
 			SNI:      "example.com",
 		},
@@ -695,9 +741,8 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 
 	removed := &TunnelInstance{
 		Name: "removed",
-		VLESSConfig: &VLESSConfig{
-			Address:  "removed.example.com",
-			Port:     1443,
+		MetricLabels: MetricLabels{
+			Server:   "removed.example.com:1443",
 			Security: "reality",
 			SNI:      "google.com",
 		},
@@ -705,9 +750,8 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 
 	kept := &TunnelInstance{
 		Name: "kept",
-		VLESSConfig: &VLESSConfig{
-			Address:  "kept.example.com",
-			Port:     2443,
+		MetricLabels: MetricLabels{
+			Server:   "kept.example.com:2443",
 			Security: "tls",
 			SNI:      "kept.example.com",
 		},
@@ -715,9 +759,8 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 
 	newInstance := &TunnelInstance{
 		Name: "new",
-		VLESSConfig: &VLESSConfig{
-			Address:  "new.example.com",
-			Port:     3443,
+		MetricLabels: MetricLabels{
+			Server:   "new.example.com:3443",
 			Security: "tls",
 			SNI:      "new.example.com",
 		},
@@ -726,9 +769,9 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 	populateMetrics := func(ti *TunnelInstance) {
 		labelVals := prometheus.Labels{
 			"name":     ti.Name,
-			"server":   fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port),
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
 		}
 		tunnelUp.With(labelVals).Set(1)
 		tunnelLatency.With(labelVals).Set(0.2)
@@ -904,6 +947,10 @@ func TestStopTunnels(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "test.com",
 			Port:     443,
+			Security: "tls",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "test.com:443",
 			Security: "tls",
 		},
 		SocksPort: 1080,
@@ -1198,6 +1245,11 @@ func TestCheckTunnel_Timeout(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
 		SocksPort:     socksPort,
 		CheckURL:      ts.URL,
 		CheckTimeout:  1 * time.Second, // Короткий timeout
@@ -1295,6 +1347,11 @@ func TestCheckTunnel_BadStatusCodes(t *testing.T) {
 					Security: "tls",
 					SNI:      "test.example.com",
 				},
+				MetricLabels: MetricLabels{
+					Server:   "test.example.com:443",
+					Security: "tls",
+					SNI:      "test.example.com",
+				},
 				SocksPort:     socksPort,
 				CheckURL:      ts.URL,
 				CheckTimeout:  5 * time.Second,
@@ -1363,6 +1420,11 @@ func TestCheckTunnel_DNSError(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "nonexistent.invalid.domain.example",
 			Port:     443,
+			Security: "tls",
+			SNI:      "nonexistent.invalid.domain.example",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "nonexistent.invalid.domain.example:443",
 			Security: "tls",
 			SNI:      "nonexistent.invalid.domain.example",
 		},
@@ -1443,6 +1505,11 @@ func TestCheckTunnel_TLSError(t *testing.T) {
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
 		SocksPort:     socksPort,
 		CheckURL:      "https://test.example.com",
 		CheckTimeout:  5 * time.Second,
@@ -1517,6 +1584,11 @@ func TestRunTunnelChecker(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "test.example.com",
 			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
@@ -1610,6 +1682,11 @@ func TestRunTunnelChecker_Context(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "test.example.com",
 			Port:     443,
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
 			Security: "tls",
 			SNI:      "test.example.com",
 		},
@@ -2124,7 +2201,7 @@ func TestTunnelValidate(t *testing.T) {
 	t.Run("invalid VLESS URL", func(t *testing.T) {
 		tunnel := Tunnel{
 			Name:          "bad-url",
-			URL:           "not-a-vless-url",
+			URL:           "vless://bad-url-no-port",
 			CheckURL:      "https://example.com",
 			CheckInterval: "30s",
 			CheckTimeout:  "10s",
@@ -2135,6 +2212,19 @@ func TestTunnelValidate(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "invalid VLESS URL") {
 			t.Errorf("expected VLESS URL error, got: %v", err)
+		}
+	})
+
+	t.Run("non-VLESS URL is accepted", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "ss-url",
+			URL:           "ss://some-data@example.com:8388",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		if err := tunnel.Validate(); err != nil {
+			t.Errorf("expected no error for non-VLESS URL, got: %v", err)
 		}
 	})
 
@@ -2192,7 +2282,7 @@ func TestTunnelValidate(t *testing.T) {
 	t.Run("multiple errors at once", func(t *testing.T) {
 		tunnel := Tunnel{
 			Name:          "all-bad",
-			URL:           "not-a-vless-url",
+			URL:           "vless://bad-url-no-port",
 			CheckURL:      "ftp://bad",
 			CheckInterval: "bad-interval",
 			CheckTimeout:  "bad-timeout",
@@ -2230,6 +2320,76 @@ func TestTunnelValidate(t *testing.T) {
 	})
 }
 
+func TestTunnelValidate_XrayConfigFile(t *testing.T) {
+	t.Run("valid xray_config_file", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "xray.json")
+		if err := os.WriteFile(tmpFile, []byte(`{}`), 0644); err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		tunnel := Tunnel{
+			Name:           "xray-tunnel",
+			XrayConfigFile: tmpFile,
+			CheckURL:       "https://example.com",
+			CheckInterval:  "30s",
+			CheckTimeout:   "10s",
+		}
+		if err := tunnel.Validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("nonexistent xray_config_file", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:           "bad-xray",
+			XrayConfigFile: "/nonexistent/xray.json",
+			CheckURL:       "https://example.com",
+			CheckInterval:  "30s",
+			CheckTimeout:   "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for nonexistent xray_config_file")
+		}
+		if !strings.Contains(err.Error(), "xray_config_file not accessible") {
+			t.Errorf("expected xray_config_file error, got: %v", err)
+		}
+	})
+
+	t.Run("both url and xray_config_file", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:           "both",
+			URL:            "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			XrayConfigFile: "/tmp/some.json",
+			CheckURL:       "https://example.com",
+			CheckInterval:  "30s",
+			CheckTimeout:   "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for both url and xray_config_file")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("expected mutually exclusive error, got: %v", err)
+		}
+	})
+
+	t.Run("neither url nor xray_config_file", func(t *testing.T) {
+		tunnel := Tunnel{
+			Name:          "neither",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+		err := tunnel.Validate()
+		if err == nil {
+			t.Fatal("expected error for missing url and xray_config_file")
+		}
+		if !strings.Contains(err.Error(), "url or xray_config_file is required") {
+			t.Errorf("expected required error, got: %v", err)
+		}
+	})
+}
+
 func TestValidateTunnels(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		config := &Config{
@@ -2253,14 +2413,14 @@ func TestValidateTunnels(t *testing.T) {
 			Tunnels: []Tunnel{
 				{
 					Name:          "bad1",
-					URL:           "not-a-vless-url",
+					URL:           "vless://bad-url-no-port",
 					CheckURL:      "https://example.com",
 					CheckInterval: "30s",
 					CheckTimeout:  "10s",
 				},
 				{
 					Name:          "bad2",
-					URL:           "http://also-not-vless",
+					URL:           "vless://also-bad-no-port",
 					CheckURL:      "https://example.com",
 					CheckInterval: "30s",
 					CheckTimeout:  "10s",
@@ -2292,7 +2452,7 @@ func TestValidateTunnels(t *testing.T) {
 				},
 				{
 					Name:          "bad",
-					URL:           "http://not-vless",
+					URL:           "vless://bad-url-no-port",
 					CheckURL:      "https://example.com",
 					CheckInterval: "30s",
 					CheckTimeout:  "10s",
@@ -2321,7 +2481,7 @@ func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
 	// Write invalid config
 	invalidConfig := `tunnels:
   - name: "bad"
-    url: "not-a-vless-url"
+    url: "vless://bad-url-no-port"
     check_interval: "30s"
     check_timeout: "10s"`
 
@@ -2335,6 +2495,11 @@ func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
 		VLESSConfig: &VLESSConfig{
 			Address:  "example.com",
 			Port:     443,
+			Security: "tls",
+			SNI:      "test.com",
+		},
+		MetricLabels: MetricLabels{
+			Server:   "example.com:443",
 			Security: "tls",
 			SNI:      "test.com",
 		},
@@ -2411,5 +2576,684 @@ tunnels:
 		t.Fatalf("watcher error: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("watcher did not exit after timeout")
+	}
+}
+
+func TestLoadXrayConfigFile(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "xray.json")
+		os.WriteFile(path, []byte(`{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"srv.com","port":443}]},"streamSettings":{"security":"tls","tlsSettings":{"serverName":"srv.com"}}}]}`), 0644)
+
+		data, labels, err := loadXrayConfigFile(path, 2080)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+
+		// Check SOCKS inbound was injected
+		var result map[string]interface{}
+		json.Unmarshal(data, &result)
+		inbounds := result["inbounds"].([]interface{})
+		inbound := inbounds[0].(map[string]interface{})
+		if inbound["port"].(float64) != 2080 {
+			t.Errorf("socks port = %v, want 2080", inbound["port"])
+		}
+		if inbound["protocol"] != "socks" {
+			t.Errorf("protocol = %v, want socks", inbound["protocol"])
+		}
+
+		// Check labels
+		if labels.Server != "srv.com:443" {
+			t.Errorf("Server = %v, want srv.com:443", labels.Server)
+		}
+		if labels.Security != "tls" {
+			t.Errorf("Security = %v, want tls", labels.Security)
+		}
+		if labels.SNI != "srv.com" {
+			t.Errorf("SNI = %v, want srv.com", labels.SNI)
+		}
+	})
+
+	t.Run("nonexistent file", func(t *testing.T) {
+		_, _, err := loadXrayConfigFile("/nonexistent/xray.json", 2080)
+		if err == nil {
+			t.Error("expected error")
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "bad.json")
+		os.WriteFile(path, []byte(`not json`), 0644)
+
+		_, _, err := loadXrayConfigFile(path, 2080)
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+	})
+}
+
+func TestInitTunnel_XrayConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+
+	xrayJSON := `{
+		"outbounds": [
+			{
+				"protocol": "vless",
+				"settings": {
+					"vnext": [{
+						"address": "example.com",
+						"port": 443,
+						"users": [{"id": "test-uuid", "encryption": "none"}]
+					}]
+				},
+				"streamSettings": {
+					"network": "tcp",
+					"security": "tls",
+					"tlsSettings": {
+						"serverName": "example.com",
+						"fingerprint": "chrome"
+					}
+				}
+			}
+		]
+	}`
+	os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+	tunnel := &Tunnel{
+		Name:           "json-tunnel",
+		XrayConfigFile: xrayConfigPath,
+		CheckURL:       "https://example.com",
+		CheckInterval:  "30s",
+		CheckTimeout:   "10s",
+	}
+
+	ti, err := initTunnel(tunnel, 11080, false)
+	if err != nil {
+		t.Fatalf("initTunnel() error = %v", err)
+	}
+	defer ti.XrayInstance.Close()
+
+	if ti.Name != "json-tunnel" {
+		t.Errorf("Name = %v, want json-tunnel", ti.Name)
+	}
+	if ti.SocksPort != 11080 {
+		t.Errorf("SocksPort = %v, want 11080", ti.SocksPort)
+	}
+	if ti.VLESSConfig != nil {
+		t.Error("VLESSConfig should be nil for xray_config_file tunnel")
+	}
+	if ti.MetricLabels.Server != "example.com:443" {
+		t.Errorf("MetricLabels.Server = %v, want example.com:443", ti.MetricLabels.Server)
+	}
+	if ti.MetricLabels.Security != "tls" {
+		t.Errorf("MetricLabels.Security = %v, want tls", ti.MetricLabels.Security)
+	}
+	if ti.MetricLabels.SNI != "example.com" {
+		t.Errorf("MetricLabels.SNI = %v, want example.com", ti.MetricLabels.SNI)
+	}
+}
+
+func TestExtractMetricLabelsFromXrayConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want MetricLabels
+	}{
+		{
+			name: "vless outbound with reality",
+			json: `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443}]},"streamSettings":{"security":"reality","realitySettings":{"serverName":"google.com"}}}]}`,
+			want: MetricLabels{Server: "example.com:443", Security: "reality", SNI: "google.com"},
+		},
+		{
+			name: "trojan outbound with tls",
+			json: `{"outbounds":[{"protocol":"trojan","settings":{"servers":[{"address":"trojan.example.com","port":8443}]},"streamSettings":{"security":"tls","tlsSettings":{"serverName":"trojan.example.com"}}}]}`,
+			want: MetricLabels{Server: "trojan.example.com:8443", Security: "tls", SNI: "trojan.example.com"},
+		},
+		{
+			name: "empty outbounds",
+			json: `{"outbounds":[]}`,
+			want: MetricLabels{},
+		},
+		{
+			name: "no outbounds",
+			json: `{}`,
+			want: MetricLabels{},
+		},
+		{
+			name: "outbound without settings",
+			json: `{"outbounds":[{"protocol":"freedom"}]}`,
+			want: MetricLabels{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			json.Unmarshal([]byte(tt.json), &raw)
+
+			got := extractMetricLabelsFromXrayConfig(raw)
+			if got != tt.want {
+				t.Errorf("extractMetricLabelsFromXrayConfig() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_Subscriptions(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		wantErr   bool
+		checkFunc func(*testing.T, *Config)
+	}{
+		{
+			name: "config with subscription",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"
+    update_interval: "1h"
+tunnels:
+  - name: "manual"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if len(c.Subscriptions) != 1 {
+					t.Fatalf("expected 1 subscription, got %d", len(c.Subscriptions))
+				}
+				if c.Subscriptions[0].URL != "https://provider.example.com/sub" {
+					t.Errorf("subscription url = %v", c.Subscriptions[0].URL)
+				}
+				if c.Subscriptions[0].UpdateInterval != "1h" {
+					t.Errorf("update_interval = %v", c.Subscriptions[0].UpdateInterval)
+				}
+			},
+		},
+		{
+			name: "subscription only (no manual tunnels)",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"
+    update_interval: "1h"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if len(c.Subscriptions) != 1 {
+					t.Fatalf("expected 1 subscription, got %d", len(c.Subscriptions))
+				}
+				if len(c.Tunnels) != 0 {
+					t.Errorf("expected 0 tunnels, got %d", len(c.Tunnels))
+				}
+			},
+		},
+		{
+			name: "subscription with default update_interval",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"`,
+			wantErr: false,
+			checkFunc: func(t *testing.T, c *Config) {
+				if c.Subscriptions[0].UpdateInterval != "1h" {
+					t.Errorf("expected default update_interval '1h', got %v", c.Subscriptions[0].UpdateInterval)
+				}
+			},
+		},
+		{
+			name: "subscription with invalid update_interval",
+			yaml: `subscriptions:
+  - url: "https://provider.example.com/sub"
+    update_interval: "invalid"`,
+			wantErr: true,
+		},
+		{
+			name: "subscription without url",
+			yaml: `subscriptions:
+  - update_interval: "1h"`,
+			wantErr: true,
+		},
+		{
+			name: "no tunnels and no subscriptions",
+			yaml: `defaults:
+  check_url: "https://example.com"`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configFile := filepath.Join(tmpDir, "config.yaml")
+			os.WriteFile(configFile, []byte(tt.yaml), 0644)
+
+			config, err := loadConfig(configFile)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("loadConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && tt.checkFunc != nil {
+				tt.checkFunc(t, config)
+			}
+		})
+	}
+}
+
+func base64Encode(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func TestFetchSubscription(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  string
+		wantCount int
+		wantErr   bool
+		wantNames []string
+	}{
+		{
+			name:      "base64 encoded vless urls",
+			response:  base64Encode("vless://uuid1@host1.com:443?type=tcp&security=reality&pbk=key&sni=google.com&fp=chrome#Server1\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=host2.com&fp=chrome#Server2"),
+			wantCount: 2,
+			wantErr:   false,
+			wantNames: []string{"Server1", "Server2"},
+		},
+		{
+			name:      "plain text urls (not base64)",
+			response:  "vless://uuid1@host1.com:443?type=tcp&security=reality&pbk=key&sni=google.com&fp=chrome#Server1\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=host2.com&fp=chrome#Server2",
+			wantCount: 2,
+			wantErr:   false,
+			wantNames: []string{"Server1", "Server2"},
+		},
+		{
+			name:      "empty lines skipped",
+			response:  base64Encode("vless://uuid1@host1.com:443?type=tcp&security=tls&sni=h.com&fp=chrome#S1\n\n\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=h2.com&fp=chrome#S2\n"),
+			wantCount: 2,
+			wantErr:   false,
+		},
+		{
+			name:      "empty response",
+			response:  "",
+			wantCount: 0,
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tt.response))
+			}))
+			defer ts.Close()
+
+			tunnels, err := fetchSubscription(ts.URL)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("fetchSubscription() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if len(tunnels) != tt.wantCount {
+				t.Errorf("got %d tunnels, want %d", len(tunnels), tt.wantCount)
+			}
+			for i, wantName := range tt.wantNames {
+				if i < len(tunnels) && tunnels[i].Name != wantName {
+					t.Errorf("tunnel[%d].Name = %v, want %v", i, tunnels[i].Name, wantName)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchSubscription_HTTPError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	_, err := fetchSubscription(ts.URL)
+	if err == nil {
+		t.Error("expected error for HTTP 500")
+	}
+}
+
+func TestFetchSubscription_InvalidURL(t *testing.T) {
+	_, err := fetchSubscription("http://127.0.0.1:0/nonexistent")
+	if err == nil {
+		t.Error("expected error for unreachable URL")
+	}
+}
+
+func TestResolveSubscriptions(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content := "vless://uuid1@host1.com:443?type=tcp&security=tls&sni=host1.com&fp=chrome#Sub-Server1\nvless://uuid2@host2.com:443?type=tcp&security=tls&sni=host2.com&fp=chrome#Sub-Server2"
+		w.Write([]byte(base64Encode(content)))
+	}))
+	defer ts.Close()
+
+	config := &Config{
+		Defaults: Defaults{
+			CheckURL:      "https://example.com",
+			CheckInterval: "1m",
+			CheckTimeout:  "10s",
+		},
+		Subscriptions: []Subscription{
+			{URL: ts.URL, UpdateInterval: "1h"},
+		},
+	}
+
+	tunnels := resolveSubscriptions(config)
+
+	if len(tunnels) != 2 {
+		t.Fatalf("expected 2 tunnels, got %d", len(tunnels))
+	}
+
+	if tunnels[0].Name != "Sub-Server1" {
+		t.Errorf("tunnel[0].Name = %v, want Sub-Server1", tunnels[0].Name)
+	}
+
+	// Check defaults applied
+	if tunnels[0].CheckURL != "https://example.com" {
+		t.Errorf("tunnel[0].CheckURL = %v, want https://example.com", tunnels[0].CheckURL)
+	}
+	if tunnels[0].CheckInterval != "1m" {
+		t.Errorf("tunnel[0].CheckInterval = %v, want 1m", tunnels[0].CheckInterval)
+	}
+	if tunnels[0].CheckTimeout != "10s" {
+		t.Errorf("tunnel[0].CheckTimeout = %v, want 10s", tunnels[0].CheckTimeout)
+	}
+}
+
+func TestResolveSubscriptions_FailedSubscription(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	config := &Config{
+		Subscriptions: []Subscription{
+			{URL: ts.URL, UpdateInterval: "1h"},
+		},
+	}
+
+	tunnels := resolveSubscriptions(config)
+	if len(tunnels) != 0 {
+		t.Errorf("expected 0 tunnels from failed subscription, got %d", len(tunnels))
+	}
+}
+
+func TestResolveSubscriptions_NoSubscriptions(t *testing.T) {
+	config := &Config{}
+	tunnels := resolveSubscriptions(config)
+	if len(tunnels) != 0 {
+		t.Errorf("expected 0 tunnels, got %d", len(tunnels))
+	}
+}
+
+func TestWatchSubscriptions_NoSubscriptions(t *testing.T) {
+	tm := &TunnelManager{
+		config: &Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Should return immediately since there are no subscriptions
+	done := make(chan struct{})
+	go func() {
+		watchSubscriptions(ctx, tm, "/nonexistent", false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good - returned immediately
+	case <-time.After(1 * time.Second):
+		t.Fatal("watchSubscriptions should return immediately when no subscriptions")
+	}
+}
+
+func TestWatchSubscriptions_NilConfig(t *testing.T) {
+	tm := &TunnelManager{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		watchSubscriptions(ctx, tm, "/nonexistent", false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good - returned immediately
+	case <-time.After(1 * time.Second):
+		t.Fatal("watchSubscriptions should return immediately when config is nil")
+	}
+}
+
+func TestApplyTunnelDefaults(t *testing.T) {
+	t.Run("fallback to global defaults when Defaults empty", func(t *testing.T) {
+		tunnel := &Tunnel{}
+		applyTunnelDefaults(tunnel, Defaults{})
+
+		if tunnel.CheckURL != defaultCheckURL {
+			t.Errorf("CheckURL = %v, want %v", tunnel.CheckURL, defaultCheckURL)
+		}
+		if tunnel.CheckInterval != defaultCheckInterval.String() {
+			t.Errorf("CheckInterval = %v, want %v", tunnel.CheckInterval, defaultCheckInterval.String())
+		}
+		if tunnel.CheckTimeout != defaultTimeout.String() {
+			t.Errorf("CheckTimeout = %v, want %v", tunnel.CheckTimeout, defaultTimeout.String())
+		}
+	})
+
+	t.Run("config defaults take priority over globals", func(t *testing.T) {
+		tunnel := &Tunnel{}
+		applyTunnelDefaults(tunnel, Defaults{
+			CheckURL:      "https://custom.com",
+			CheckInterval: "2m",
+			CheckTimeout:  "15s",
+		})
+
+		if tunnel.CheckURL != "https://custom.com" {
+			t.Errorf("CheckURL = %v, want https://custom.com", tunnel.CheckURL)
+		}
+		if tunnel.CheckInterval != "2m" {
+			t.Errorf("CheckInterval = %v, want 2m", tunnel.CheckInterval)
+		}
+		if tunnel.CheckTimeout != "15s" {
+			t.Errorf("CheckTimeout = %v, want 15s", tunnel.CheckTimeout)
+		}
+	})
+
+	t.Run("tunnel values not overwritten", func(t *testing.T) {
+		tunnel := &Tunnel{
+			CheckURL:      "https://mine.com",
+			CheckInterval: "5m",
+			CheckTimeout:  "20s",
+		}
+		applyTunnelDefaults(tunnel, Defaults{
+			CheckURL:      "https://default.com",
+			CheckInterval: "1m",
+			CheckTimeout:  "10s",
+		})
+
+		if tunnel.CheckURL != "https://mine.com" {
+			t.Errorf("CheckURL = %v, want https://mine.com", tunnel.CheckURL)
+		}
+		if tunnel.CheckInterval != "5m" {
+			t.Errorf("CheckInterval = %v, want 5m", tunnel.CheckInterval)
+		}
+		if tunnel.CheckTimeout != "20s" {
+			t.Errorf("CheckTimeout = %v, want 20s", tunnel.CheckTimeout)
+		}
+	})
+}
+
+func TestResolveSubscriptions_FiltersNonVLESS(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content := "vless://uuid@host.com:443?type=tcp&security=tls&sni=host.com&fp=chrome#VLESS-Server\nss://data@host2.com:8388#SS-Server\ntrojan://pwd@host3.com:443#Trojan-Server\nvmess://base64data#VMess-Server"
+		w.Write([]byte(base64Encode(content)))
+	}))
+	defer ts.Close()
+
+	config := &Config{
+		Subscriptions: []Subscription{{URL: ts.URL, UpdateInterval: "1h"}},
+	}
+
+	tunnels := resolveSubscriptions(config)
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 VLESS tunnel, got %d", len(tunnels))
+	}
+	if tunnels[0].Name != "VLESS-Server" {
+		t.Errorf("tunnel[0].Name = %v, want VLESS-Server", tunnels[0].Name)
+	}
+}
+
+func TestResolveSubscriptions_MultipleWithPartialFailure(t *testing.T) {
+	goodServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(base64Encode("vless://uuid@host.com:443?type=tcp&security=tls&sni=h.com&fp=chrome#Good")))
+	}))
+	defer goodServer.Close()
+
+	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer badServer.Close()
+
+	config := &Config{
+		Subscriptions: []Subscription{
+			{URL: goodServer.URL, UpdateInterval: "1h"},
+			{URL: badServer.URL, UpdateInterval: "1h"},
+			{URL: goodServer.URL, UpdateInterval: "1h"},
+		},
+	}
+
+	tunnels := resolveSubscriptions(config)
+	if len(tunnels) != 2 {
+		t.Errorf("expected 2 tunnels from 2 good subscriptions, got %d", len(tunnels))
+	}
+}
+
+func TestFetchSubscription_Base64RawEncoding(t *testing.T) {
+	content := "vless://uuid@host.com:443?type=tcp&security=tls&sni=host.com&fp=chrome#RawServer"
+	// RawStdEncoding = base64 without padding (no '=' suffix)
+	encoded := base64.RawStdEncoding.EncodeToString([]byte(content))
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(encoded))
+	}))
+	defer ts.Close()
+
+	tunnels, err := fetchSubscription(ts.URL)
+	if err != nil {
+		t.Fatalf("fetchSubscription() error = %v", err)
+	}
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel, got %d", len(tunnels))
+	}
+	if tunnels[0].Name != "RawServer" {
+		t.Errorf("Name = %v, want RawServer", tunnels[0].Name)
+	}
+}
+
+func TestFetchSubscription_NameFromHostWhenNoFragment(t *testing.T) {
+	content := "vless://uuid@myserver.com:8443?type=tcp&security=tls&sni=myserver.com&fp=chrome"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(content))
+	}))
+	defer ts.Close()
+
+	tunnels, err := fetchSubscription(ts.URL)
+	if err != nil {
+		t.Fatalf("fetchSubscription() error = %v", err)
+	}
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel, got %d", len(tunnels))
+	}
+	// Without #fragment, name should come from host
+	if tunnels[0].Name == "" {
+		t.Error("expected non-empty name from host:port")
+	}
+}
+
+func TestLoadXrayConfigFile_OverwritesUserInbounds(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "xray.json")
+	// Config with user-defined inbounds that should be replaced
+	config := `{"inbounds":[{"port":12345,"protocol":"http"}],"outbounds":[{"protocol":"freedom"}]}`
+	os.WriteFile(path, []byte(config), 0644)
+
+	data, _, err := loadXrayConfigFile(path, 3080)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(data, &result)
+
+	inbounds := result["inbounds"].([]interface{})
+	if len(inbounds) != 1 {
+		t.Fatalf("expected 1 inbound (SOCKS), got %d", len(inbounds))
+	}
+	inbound := inbounds[0].(map[string]interface{})
+	if inbound["protocol"] != "socks" {
+		t.Errorf("protocol = %v, want socks (user inbounds should be replaced)", inbound["protocol"])
+	}
+	if inbound["port"].(float64) != 3080 {
+		t.Errorf("port = %v, want 3080", inbound["port"])
+	}
+}
+
+func TestInitTunnel_XrayConfigFile_AutoName(t *testing.T) {
+	tmpDir := t.TempDir()
+	xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+
+	xrayJSON := `{
+		"outbounds": [{
+			"protocol": "vless",
+			"settings": {"vnext": [{"address": "auto.example.com", "port": 443, "users": [{"id": "uuid", "encryption": "none"}]}]},
+			"streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"serverName": "auto.example.com"}}
+		}]
+	}`
+	os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+	// No Name set — should auto-generate from MetricLabels.Server
+	tunnel := &Tunnel{
+		XrayConfigFile: xrayConfigPath,
+		CheckURL:       "https://example.com",
+		CheckInterval:  "30s",
+		CheckTimeout:   "10s",
+	}
+
+	ti, err := initTunnel(tunnel, 11090, false)
+	if err != nil {
+		t.Fatalf("initTunnel() error = %v", err)
+	}
+	defer ti.XrayInstance.Close()
+
+	if ti.Name != "auto.example.com:443" {
+		t.Errorf("Name = %v, want auto.example.com:443", ti.Name)
+	}
+}
+
+func TestInitTunnel_XrayConfigFile_FallbackName(t *testing.T) {
+	tmpDir := t.TempDir()
+	xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+
+	// Config without parseable server address — name should fallback to port-based
+	xrayJSON := `{"outbounds": [{"protocol": "freedom"}]}`
+	os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+	tunnel := &Tunnel{
+		XrayConfigFile: xrayConfigPath,
+		CheckURL:       "https://example.com",
+		CheckInterval:  "30s",
+		CheckTimeout:   "10s",
+	}
+
+	ti, err := initTunnel(tunnel, 11091, false)
+	if err != nil {
+		t.Fatalf("initTunnel() error = %v", err)
+	}
+	defer ti.XrayInstance.Close()
+
+	if ti.Name != "tunnel-port-11091" {
+		t.Errorf("Name = %v, want tunnel-port-11091", ti.Name)
 	}
 }

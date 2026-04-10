@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,8 +97,9 @@ func init() {
 
 // Config structures
 type Config struct {
-	Defaults Defaults `yaml:"defaults"`
-	Tunnels  []Tunnel `yaml:"tunnels"`
+	Defaults      Defaults       `yaml:"defaults"`
+	Tunnels       []Tunnel       `yaml:"tunnels"`
+	Subscriptions []Subscription `yaml:"subscriptions"`
 }
 
 type Defaults struct {
@@ -106,12 +108,18 @@ type Defaults struct {
 	CheckTimeout  string `yaml:"check_timeout"`
 }
 
+type Subscription struct {
+	URL            string `yaml:"url"`
+	UpdateInterval string `yaml:"update_interval"`
+}
+
 type Tunnel struct {
-	Name          string `yaml:"name"`
-	URL           string `yaml:"url"`
-	CheckURL      string `yaml:"check_url"`
-	CheckInterval string `yaml:"check_interval"`
-	CheckTimeout  string `yaml:"check_timeout"`
+	Name           string `yaml:"name"`
+	URL            string `yaml:"url"`
+	XrayConfigFile string `yaml:"xray_config_file"`
+	CheckURL       string `yaml:"check_url"`
+	CheckInterval  string `yaml:"check_interval"`
+	CheckTimeout   string `yaml:"check_timeout"`
 }
 
 type VLESSConfig struct {
@@ -127,9 +135,19 @@ type VLESSConfig struct {
 	Type     string
 }
 
+// MetricLabels holds protocol-agnostic labels for Prometheus metrics.
+// Populated from VLESSConfig for VLESS tunnels; will be populated
+// from xray_config_file metadata for raw-config tunnels.
+type MetricLabels struct {
+	Server   string
+	Security string
+	SNI      string
+}
+
 type TunnelInstance struct {
 	Name          string
-	VLESSConfig   *VLESSConfig
+	VLESSConfig   *VLESSConfig // nil for xray_config_file tunnels
+	MetricLabels  MetricLabels
 	XrayInstance  *core.Instance
 	SocksPort     int
 	CheckURL      string
@@ -143,6 +161,28 @@ type TunnelManager struct {
 	mu            sync.RWMutex
 	instances     []*TunnelInstance
 	nextSocksPort int
+	config        *Config
+}
+
+func applyTunnelDefaults(tunnel *Tunnel, defaults Defaults) {
+	if tunnel.CheckURL == "" {
+		tunnel.CheckURL = defaults.CheckURL
+	}
+	if tunnel.CheckInterval == "" {
+		tunnel.CheckInterval = defaults.CheckInterval
+	}
+	if tunnel.CheckTimeout == "" {
+		tunnel.CheckTimeout = defaults.CheckTimeout
+	}
+	if tunnel.CheckURL == "" {
+		tunnel.CheckURL = defaultCheckURL
+	}
+	if tunnel.CheckInterval == "" {
+		tunnel.CheckInterval = defaultCheckInterval.String()
+	}
+	if tunnel.CheckTimeout == "" {
+		tunnel.CheckTimeout = defaultTimeout.String()
+	}
 }
 
 func loadConfig(configPath string) (*Config, error) {
@@ -157,42 +197,137 @@ func loadConfig(configPath string) (*Config, error) {
 	}
 
 	// Validate
-	if len(config.Tunnels) == 0 {
-		return nil, fmt.Errorf("no tunnels defined in config")
+	if len(config.Tunnels) == 0 && len(config.Subscriptions) == 0 {
+		return nil, fmt.Errorf("no tunnels or subscriptions defined in config")
+	}
+
+	// Validate subscriptions
+	for i, sub := range config.Subscriptions {
+		if sub.URL == "" {
+			return nil, fmt.Errorf("subscription %d: url is required", i)
+		}
+		if sub.UpdateInterval == "" {
+			config.Subscriptions[i].UpdateInterval = "1h"
+		}
+		if _, err := time.ParseDuration(config.Subscriptions[i].UpdateInterval); err != nil {
+			return nil, fmt.Errorf("subscription %d: invalid update_interval: %v", i, err)
+		}
 	}
 
 	// Apply defaults to tunnels
 	for i := range config.Tunnels {
 		tunnel := &config.Tunnels[i]
 
-		if tunnel.URL == "" {
-			return nil, fmt.Errorf("tunnel %d: url is required", i)
+		hasURL := tunnel.URL != ""
+		hasXrayConfig := tunnel.XrayConfigFile != ""
+
+		if hasURL && hasXrayConfig {
+			return nil, fmt.Errorf("tunnel %d: url and xray_config_file are mutually exclusive", i)
+		}
+		if !hasURL && !hasXrayConfig {
+			return nil, fmt.Errorf("tunnel %d: url or xray_config_file is required", i)
 		}
 
-		// Apply defaults if not specified in tunnel
-		if tunnel.CheckURL == "" {
-			tunnel.CheckURL = config.Defaults.CheckURL
-		}
-		if tunnel.CheckInterval == "" {
-			tunnel.CheckInterval = config.Defaults.CheckInterval
-		}
-		if tunnel.CheckTimeout == "" {
-			tunnel.CheckTimeout = config.Defaults.CheckTimeout
-		}
-
-		// Set global defaults if not specified anywhere
-		if tunnel.CheckURL == "" {
-			tunnel.CheckURL = defaultCheckURL
-		}
-		if tunnel.CheckInterval == "" {
-			tunnel.CheckInterval = defaultCheckInterval.String()
-		}
-		if tunnel.CheckTimeout == "" {
-			tunnel.CheckTimeout = defaultTimeout.String()
-		}
+		applyTunnelDefaults(tunnel, config.Defaults)
 	}
 
 	return &config, nil
+}
+
+func fetchSubscription(subURL string) ([]Tunnel, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(subURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch subscription: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("subscription returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max
+	if err != nil {
+		return nil, fmt.Errorf("failed to read subscription response: %v", err)
+	}
+
+	content := strings.TrimSpace(string(body))
+	if content == "" {
+		return nil, nil
+	}
+
+	// Try to decode as base64 (with and without padding)
+	decoded, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(content)
+		if err != nil {
+			decoded, err = base64.URLEncoding.DecodeString(content)
+			if err != nil {
+				decoded, err = base64.RawURLEncoding.DecodeString(content)
+				if err != nil {
+					// Not base64 — use as plain text
+					decoded = []byte(content)
+				}
+			}
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(decoded)), "\n")
+
+	var tunnels []Tunnel
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		tunnel := Tunnel{URL: line}
+
+		// Extract name from fragment (#name)
+		if u, err := url.Parse(line); err == nil && u.Fragment != "" {
+			tunnel.Name = u.Fragment
+		} else if u != nil {
+			// Generate name from host:port
+			tunnel.Name = u.Host
+		}
+
+		tunnels = append(tunnels, tunnel)
+	}
+
+	return tunnels, nil
+}
+
+func resolveSubscriptions(config *Config) []Tunnel {
+	var allTunnels []Tunnel
+
+	for i, sub := range config.Subscriptions {
+		tunnels, err := fetchSubscription(sub.URL)
+		if err != nil {
+			log.Printf("Failed to fetch subscription %d (%s): %v", i, sub.URL, err)
+			continue
+		}
+
+		// Filter to only supported protocols (VLESS URLs)
+		var supported []Tunnel
+		for _, t := range tunnels {
+			if strings.HasPrefix(t.URL, "vless://") {
+				supported = append(supported, t)
+			} else {
+				log.Printf("Subscription %d: skipping unsupported URL scheme: %s", i, t.Name)
+			}
+		}
+		tunnels = supported
+
+		// Apply defaults to each tunnel from subscription
+		for j := range tunnels {
+			applyTunnelDefaults(&tunnels[j], config.Defaults)
+		}
+
+		log.Printf("Subscription %d: fetched %d tunnels", i, len(tunnels))
+		allTunnels = append(allTunnels, tunnels...)
+	}
+
+	return allTunnels
 }
 
 func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {
@@ -348,14 +483,108 @@ func startXray(configJSON []byte) (*core.Instance, error) {
 	return instance, nil
 }
 
-func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, error) {
-	// Parse VLESS URL
-	vlessConfig, err := parseVLESSURL(tunnel.URL)
+func loadXrayConfigFile(path string, socksPort int) ([]byte, MetricLabels, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse VLESS URL: %v", err)
+		return nil, MetricLabels{}, fmt.Errorf("failed to read xray config file: %v", err)
 	}
 
-	// Parse durations
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, MetricLabels{}, fmt.Errorf("failed to parse xray config JSON: %v", err)
+	}
+
+	labels := extractMetricLabelsFromXrayConfig(raw)
+
+	logLevel := os.Getenv("XRAY_LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "warning"
+	}
+
+	// Inject log and SOCKS5 inbound, keep user's outbounds
+	raw["log"] = map[string]interface{}{
+		"loglevel": logLevel,
+	}
+	raw["inbounds"] = []map[string]interface{}{
+		{
+			"port":     socksPort,
+			"listen":   "127.0.0.1",
+			"protocol": "socks",
+			"settings": map[string]interface{}{
+				"auth": "noauth",
+				"udp":  true,
+			},
+		},
+	}
+
+	result, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, MetricLabels{}, fmt.Errorf("failed to marshal xray config: %v", err)
+	}
+
+	return result, labels, nil
+}
+
+func extractMetricLabelsFromXrayConfig(raw map[string]interface{}) MetricLabels {
+	labels := MetricLabels{}
+
+	outbounds, ok := raw["outbounds"].([]interface{})
+	if !ok || len(outbounds) == 0 {
+		return labels
+	}
+
+	ob, ok := outbounds[0].(map[string]interface{})
+	if !ok {
+		return labels
+	}
+
+	// Try to extract server address from settings
+	if settings, ok := ob["settings"].(map[string]interface{}); ok {
+		// VLESS/VMess: vnext[0].address:port
+		if vnext, ok := settings["vnext"].([]interface{}); ok && len(vnext) > 0 {
+			if server, ok := vnext[0].(map[string]interface{}); ok {
+				addr, _ := server["address"].(string)
+				port, _ := server["port"].(float64)
+				if addr != "" && port > 0 {
+					labels.Server = fmt.Sprintf("%s:%d", addr, int(port))
+				}
+			}
+		}
+		// Trojan/Shadowsocks: servers[0].address:port
+		if labels.Server == "" {
+			if servers, ok := settings["servers"].([]interface{}); ok && len(servers) > 0 {
+				if server, ok := servers[0].(map[string]interface{}); ok {
+					addr, _ := server["address"].(string)
+					port, _ := server["port"].(float64)
+					if addr != "" && port > 0 {
+						labels.Server = fmt.Sprintf("%s:%d", addr, int(port))
+					}
+				}
+			}
+		}
+	}
+
+	// Extract security and SNI from streamSettings
+	if ss, ok := ob["streamSettings"].(map[string]interface{}); ok {
+		if sec, ok := ss["security"].(string); ok {
+			labels.Security = sec
+		}
+		if rs, ok := ss["realitySettings"].(map[string]interface{}); ok {
+			if sni, ok := rs["serverName"].(string); ok {
+				labels.SNI = sni
+			}
+		}
+		if ts, ok := ss["tlsSettings"].(map[string]interface{}); ok {
+			if sni, ok := ts["serverName"].(string); ok {
+				labels.SNI = sni
+			}
+		}
+	}
+
+	return labels
+}
+
+func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, error) {
 	checkInterval, err := time.ParseDuration(tunnel.CheckInterval)
 	if err != nil {
 		return nil, fmt.Errorf("invalid check_interval: %v", err)
@@ -366,31 +595,57 @@ func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, err
 		return nil, fmt.Errorf("invalid check_timeout: %v", err)
 	}
 
-	// Create Xray config
-	xrayConfigJSON, err := createXrayConfig(vlessConfig, socksPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Xray config: %v", err)
+	var xrayConfigJSON []byte
+	var vlessConfig *VLESSConfig
+	var metricLabels MetricLabels
+
+	if tunnel.XrayConfigFile != "" {
+		// xray_config_file mode
+		xrayConfigJSON, metricLabels, err = loadXrayConfigFile(tunnel.XrayConfigFile, socksPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load xray config file: %v", err)
+		}
+	} else {
+		// VLESS URL mode
+		vlessConfig, err = parseVLESSURL(tunnel.URL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse VLESS URL: %v", err)
+		}
+
+		metricLabels = MetricLabels{
+			Server:   fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port),
+			Security: vlessConfig.Security,
+			SNI:      vlessConfig.SNI,
+		}
+
+		xrayConfigJSON, err = createXrayConfig(vlessConfig, socksPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Xray config: %v", err)
+		}
 	}
 
 	if debug {
 		log.Printf("[%s] Xray config: %s", tunnel.Name, string(xrayConfigJSON))
 	}
 
-	// Start Xray instance
 	xrayInstance, err := startXray(xrayConfigJSON)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start Xray: %v", err)
 	}
 
-	// Generate name if not specified
 	name := tunnel.Name
 	if name == "" {
-		name = fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port)
+		if metricLabels.Server != "" {
+			name = metricLabels.Server
+		} else {
+			name = fmt.Sprintf("tunnel-port-%d", socksPort)
+		}
 	}
 
 	return &TunnelInstance{
 		Name:          name,
 		VLESSConfig:   vlessConfig,
+		MetricLabels:  metricLabels,
 		XrayInstance:  xrayInstance,
 		SocksPort:     socksPort,
 		CheckURL:      tunnel.CheckURL,
@@ -503,12 +758,21 @@ func checkTunnel(ti *TunnelInstance) {
 	start := time.Now()
 
 	// Labels для метрик
-	serverLabel := fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port)
 	labels := prometheus.Labels{
 		"name":     ti.Name,
-		"server":   serverLabel,
-		"security": ti.VLESSConfig.Security,
-		"sni":      ti.VLESSConfig.SNI,
+		"server":   ti.MetricLabels.Server,
+		"security": ti.MetricLabels.Security,
+		"sni":      ti.MetricLabels.SNI,
+	}
+
+	resultLabels := func(result string) prometheus.Labels {
+		return prometheus.Labels{
+			"name":     ti.Name,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
+			"result":   result,
+		}
 	}
 
 	socksProxy := fmt.Sprintf("127.0.0.1:%d", ti.SocksPort)
@@ -518,13 +782,7 @@ func checkTunnel(ti *TunnelInstance) {
 	if err != nil {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(prometheus.Labels{
-			"name":     ti.Name,
-			"server":   serverLabel,
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
-			"result":   "failure",
-		}).Inc()
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
 	}
 	conn.Close()
@@ -546,13 +804,7 @@ func checkTunnel(ti *TunnelInstance) {
 	if err != nil {
 		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
 		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(prometheus.Labels{
-			"name":     ti.Name,
-			"server":   serverLabel,
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
-			"result":   "failure",
-		}).Inc()
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
 	}
 	defer resp.Body.Close()
@@ -563,13 +815,7 @@ func checkTunnel(ti *TunnelInstance) {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusTemporaryRedirect {
 		log.Printf("[%s] ✗ Tunnel DOWN: status %d", ti.Name, resp.StatusCode)
 		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(prometheus.Labels{
-			"name":     ti.Name,
-			"server":   serverLabel,
-			"security": ti.VLESSConfig.Security,
-			"sni":      ti.VLESSConfig.SNI,
-			"result":   "failure",
-		}).Inc()
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
 	}
 
@@ -590,13 +836,7 @@ func checkTunnel(ti *TunnelInstance) {
 		tunnelLatency.With(labels).Set(duration.Seconds())
 	}
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
-	tunnelCheckTotal.With(prometheus.Labels{
-		"name":     ti.Name,
-		"server":   serverLabel,
-		"security": ti.VLESSConfig.Security,
-		"sni":      ti.VLESSConfig.SNI,
-		"result":   "success",
-	}).Inc()
+	tunnelCheckTotal.With(resultLabels("success")).Inc()
 }
 
 func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
@@ -635,9 +875,34 @@ func waitForSOCKSPort(port int, timeout time.Duration) error {
 // It collects all validation errors and returns them joined together.
 func (t *Tunnel) Validate() error {
 	var errs []error
-	if _, err := parseVLESSURL(t.URL); err != nil {
-		errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+
+	hasURL := t.URL != ""
+	hasXrayConfig := t.XrayConfigFile != ""
+
+	if hasURL && hasXrayConfig {
+		errs = append(errs, fmt.Errorf("url and xray_config_file are mutually exclusive"))
 	}
+	if !hasURL && !hasXrayConfig {
+		errs = append(errs, fmt.Errorf("url or xray_config_file is required"))
+	}
+
+	if hasURL {
+		if strings.HasPrefix(t.URL, "vless://") {
+			if _, err := parseVLESSURL(t.URL); err != nil {
+				errs = append(errs, fmt.Errorf("invalid VLESS URL: %v", err))
+			}
+		} else {
+			if _, err := url.Parse(t.URL); err != nil {
+				errs = append(errs, fmt.Errorf("invalid URL: %v", err))
+			}
+		}
+	}
+	if hasXrayConfig {
+		if _, err := os.Stat(t.XrayConfigFile); err != nil {
+			errs = append(errs, fmt.Errorf("xray_config_file not accessible: %v", err))
+		}
+	}
+
 	if _, err := time.ParseDuration(t.CheckInterval); err != nil {
 		errs = append(errs, fmt.Errorf("invalid check_interval: %v", err))
 	}
@@ -691,8 +956,8 @@ func initializeTunnels(config *Config, debug bool, baseSocksPort int) ([]*Tunnel
 
 		tunnelInstances = append(tunnelInstances, ti)
 
-		log.Printf("Started tunnel [%s] → %s:%d [%s] on SOCKS port %d",
-			ti.Name, ti.VLESSConfig.Address, ti.VLESSConfig.Port, ti.VLESSConfig.Security, socksPort)
+		log.Printf("Started tunnel [%s] → %s [%s] on SOCKS port %d",
+			ti.Name, ti.MetricLabels.Server, ti.MetricLabels.Security, socksPort)
 	}
 
 	// Wait for all SOCKS ports to become ready
@@ -725,12 +990,11 @@ func stopTunnels(instances []*TunnelInstance) {
 }
 
 func tunnelMetricLabels(ti *TunnelInstance) []string {
-	serverLabel := fmt.Sprintf("%s:%d", ti.VLESSConfig.Address, ti.VLESSConfig.Port)
 	return []string{
 		ti.Name,
-		serverLabel,
-		ti.VLESSConfig.Security,
-		ti.VLESSConfig.SNI,
+		ti.MetricLabels.Server,
+		ti.MetricLabels.Security,
+		ti.MetricLabels.SNI,
 	}
 }
 
@@ -773,6 +1037,15 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
+	// Resolve subscriptions
+	subTunnels := resolveSubscriptions(newConfig)
+	newConfig.Tunnels = append(newConfig.Tunnels, subTunnels...)
+
+	if len(newConfig.Tunnels) == 0 {
+		log.Printf("No tunnels after resolving subscriptions, keeping current config")
+		return fmt.Errorf("no tunnels to initialize")
+	}
+
 	// Validate all tunnels before attempting to start new ones
 	if err := validateTunnels(newConfig); err != nil {
 		log.Printf("Config validation failed, keeping current tunnels: %v", err)
@@ -795,6 +1068,7 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	oldInstances := tm.instances
 	tm.instances = newInstances
 	tm.nextSocksPort = newBasePort + len(newInstances)
+	tm.config = newConfig
 	tm.mu.Unlock()
 
 	stopTunnels(oldInstances)
@@ -948,6 +1222,41 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 	}
 }
 
+func watchSubscriptions(ctx context.Context, tm *TunnelManager, configFile string, debug bool) {
+	tm.mu.RLock()
+	config := tm.config
+	tm.mu.RUnlock()
+
+	if config == nil || len(config.Subscriptions) == 0 {
+		return
+	}
+
+	// Find minimum update interval
+	minInterval := 1 * time.Hour
+	for _, sub := range config.Subscriptions {
+		d, err := time.ParseDuration(sub.UpdateInterval)
+		if err == nil && d < minInterval {
+			minInterval = d
+		}
+	}
+
+	ticker := time.NewTicker(minInterval)
+	defer ticker.Stop()
+
+	log.Printf("Subscription watcher started (interval: %v)", minInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := tm.reloadConfig(configFile, debug); err != nil {
+				log.Printf("Subscription reload failed: %v", err)
+			}
+		}
+	}
+}
+
 func main() {
 	log.Printf("xray-health-exporter %s", Version)
 
@@ -970,6 +1279,14 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Resolve subscriptions at startup
+	subTunnels := resolveSubscriptions(config)
+	config.Tunnels = append(config.Tunnels, subTunnels...)
+
+	if len(config.Tunnels) == 0 {
+		log.Fatalf("No tunnels to initialize (including subscriptions)")
+	}
+
 	if debug {
 		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
 	}
@@ -989,6 +1306,7 @@ func main() {
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
 	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
+	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 
 	// Cleanup on exit
@@ -1004,6 +1322,9 @@ func main() {
 			log.Printf("File watcher stopped: %v", err)
 		}
 	}()
+
+	// Start subscription watcher
+	go watchSubscriptions(ctx, tunnelManager, configFile, debug)
 
 	// HTTP server for metrics
 	mux := http.NewServeMux()

@@ -164,6 +164,27 @@ type TunnelManager struct {
 	config        *Config
 }
 
+func applyTunnelDefaults(tunnel *Tunnel, defaults Defaults) {
+	if tunnel.CheckURL == "" {
+		tunnel.CheckURL = defaults.CheckURL
+	}
+	if tunnel.CheckInterval == "" {
+		tunnel.CheckInterval = defaults.CheckInterval
+	}
+	if tunnel.CheckTimeout == "" {
+		tunnel.CheckTimeout = defaults.CheckTimeout
+	}
+	if tunnel.CheckURL == "" {
+		tunnel.CheckURL = defaultCheckURL
+	}
+	if tunnel.CheckInterval == "" {
+		tunnel.CheckInterval = defaultCheckInterval.String()
+	}
+	if tunnel.CheckTimeout == "" {
+		tunnel.CheckTimeout = defaultTimeout.String()
+	}
+}
+
 func loadConfig(configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -207,27 +228,7 @@ func loadConfig(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("tunnel %d: url or xray_config_file is required", i)
 		}
 
-		// Apply defaults if not specified in tunnel
-		if tunnel.CheckURL == "" {
-			tunnel.CheckURL = config.Defaults.CheckURL
-		}
-		if tunnel.CheckInterval == "" {
-			tunnel.CheckInterval = config.Defaults.CheckInterval
-		}
-		if tunnel.CheckTimeout == "" {
-			tunnel.CheckTimeout = config.Defaults.CheckTimeout
-		}
-
-		// Set global defaults if not specified anywhere
-		if tunnel.CheckURL == "" {
-			tunnel.CheckURL = defaultCheckURL
-		}
-		if tunnel.CheckInterval == "" {
-			tunnel.CheckInterval = defaultCheckInterval.String()
-		}
-		if tunnel.CheckTimeout == "" {
-			tunnel.CheckTimeout = defaultTimeout.String()
-		}
+		applyTunnelDefaults(tunnel, config.Defaults)
 	}
 
 	return &config, nil
@@ -319,24 +320,7 @@ func resolveSubscriptions(config *Config) []Tunnel {
 
 		// Apply defaults to each tunnel from subscription
 		for j := range tunnels {
-			if tunnels[j].CheckURL == "" {
-				tunnels[j].CheckURL = config.Defaults.CheckURL
-			}
-			if tunnels[j].CheckInterval == "" {
-				tunnels[j].CheckInterval = config.Defaults.CheckInterval
-			}
-			if tunnels[j].CheckTimeout == "" {
-				tunnels[j].CheckTimeout = config.Defaults.CheckTimeout
-			}
-			if tunnels[j].CheckURL == "" {
-				tunnels[j].CheckURL = defaultCheckURL
-			}
-			if tunnels[j].CheckInterval == "" {
-				tunnels[j].CheckInterval = defaultCheckInterval.String()
-			}
-			if tunnels[j].CheckTimeout == "" {
-				tunnels[j].CheckTimeout = defaultTimeout.String()
-			}
+			applyTunnelDefaults(&tunnels[j], config.Defaults)
 		}
 
 		log.Printf("Subscription %d: fetched %d tunnels", i, len(tunnels))

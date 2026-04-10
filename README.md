@@ -4,11 +4,13 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/batonogov/xray-health-exporter)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Prometheus exporter для мониторинга множественных VLESS туннелей со встроенным Xray-core.
+Prometheus exporter для мониторинга туннелей Xray-core.
 
 **Особенности:**
 - Поддержка множественных туннелей в одном экземпляре
-- Конфигурация через YAML файл
+- VLESS URL или нативный Xray JSON-конфиг (`xray_config_file`) — все протоколы и транспорты
+- Подписки (subscription URL) — автоматическое получение и обновление списка серверов
+- Конфигурация через YAML файл с горячей перезагрузкой
 - Автоматическое распределение SOCKS портов
 - Индивидуальные настройки для каждого туннеля
 
@@ -45,11 +47,19 @@ defaults:
   check_interval: "30s"
   check_timeout: "30s"
 
+# Подписки (опционально) — автоматическое получение серверов
+subscriptions:
+  - url: "https://provider.example.com/api/v1/client/subscribe?token=xxx"
+    update_interval: "1h"
+
 tunnels:
+  # Вариант 1: VLESS URL
   - name: "Server 1"
     url: "vless://uuid@host1:443?type=tcp&security=reality&pbk=...&sni=google.com"
+
+  # Вариант 2: нативный Xray JSON-конфиг (любой протокол)
   - name: "Server 2"
-    url: "vless://uuid@host2:443?type=tcp&security=tls&sni=example.com"
+    xray_config_file: "/etc/xray/server2.json"
 ```
 
 См. [config.example.yaml](config.example.yaml) для полного примера.
@@ -87,7 +97,7 @@ xray_tunnel_last_success_timestamp{name="Server 1",server="example.com:443",secu
 xray_tunnel_http_status{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 200
 ```
 
-> 💡 Label `name` содержит имя туннеля из конфига (или `host:port` если имя не указано). Labels позволяют мониторить несколько VLESS серверов одновременно
+> 💡 Label `name` содержит имя туннеля из конфига (или `host:port` если имя не указано). Labels позволяют мониторить несколько серверов одновременно
 
 **Endpoints:**
 - `/metrics` - Prometheus метрики
@@ -104,14 +114,19 @@ defaults:
   check_interval: "30s"
   check_timeout: "30s"
 
+# Подписки — автоматическое получение серверов (опционально)
+subscriptions:
+  - url: "https://provider.example.com/subscribe?token=xxx"
+    update_interval: "1h"  # как часто обновлять (по умолчанию 1h)
+
 # Список туннелей для мониторинга
 tunnels:
-  # Минимальная конфигурация
+  # Вариант 1: VLESS URL
   - url: "vless://uuid@host:443?type=tcp&security=reality&pbk=...&sni=google.com"
 
-  # С именем
-  - name: "Production Server"
-    url: "vless://uuid@host:443?..."
+  # Вариант 2: нативный Xray JSON-конфиг (любой протокол/транспорт)
+  - name: "VMess Server"
+    xray_config_file: "/etc/xray/vmess.json"
 
   # С переопределением параметров
   - name: "Backup Server"
@@ -123,12 +138,18 @@ tunnels:
 
 **Параметры туннеля:**
 - `name` (опционально) - имя туннеля для логов. Если не указано, используется `host:port`
-- `url` (обязательно) - VLESS URL подключения
+- `url` - VLESS URL подключения (взаимоисключающе с `xray_config_file`)
+- `xray_config_file` - путь к нативному Xray JSON-конфигу (взаимоисключающе с `url`). Пользователь задаёт только outbound, SOCKS5 inbound инжектится автоматически
 - `check_url` (опционально) - URL для проверки доступности
 - `check_interval` (опционально) - интервал между проверками
 - `check_timeout` (опционально) - таймаут проверки
 
+**Параметры подписки:**
+- `url` (обязательно) - URL подписки (возвращает base64-encoded или plain text список серверов)
+- `update_interval` (опционально) - интервал обновления (по умолчанию `1h`)
+
 **Примечания:**
+- Должен быть указан хотя бы один туннель или подписка
 - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082...)
 - Формат duration: "30s", "1m", "1h30m"
 - Если параметр не указан в туннеле, используется значение из `defaults`
@@ -212,7 +233,7 @@ task build
 
 ### 🧪 Тестирование
 
-**Текущее покрытие тестами:** 69.2%
+**Текущее покрытие тестами:** ~75%
 
 Проект включает обширный набор тестов:
 - ✅ Unit-тесты для всех основных функций

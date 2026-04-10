@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/batonogov/xray-health-exporter/compare/v1.1.1...v1.1.2) (2026-04-10)
+
+
+### Bug Fixes
+
+* use go release-type for release-please to include changelog in release body ([#64](https://github.com/batonogov/xray-health-exporter/issues/64)) ([7e3e535](https://github.com/batonogov/xray-health-exporter/commit/7e3e5352435ce41831c1c6a368177e6626070980))
+
 ## [1.1.1](https://github.com/batonogov/xray-health-exporter/compare/v1.1.0...v1.1.1) (2026-04-10)
 
 

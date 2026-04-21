@@ -14,7 +14,7 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.Version=${VERSION}" -o xray-health-exporter .
 
 # Финальная стадия
-FROM alpine:3.23.3
+FROM alpine:3.23.4
 
 RUN apk --no-cache --no-scripts add ca-certificates && \
     addgroup -g 10001 xray && \

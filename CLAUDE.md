@@ -8,7 +8,7 @@ Prometheus exporter на Go для мониторинга туннелей Xray-
 
 ## Команды
 
-Task runner — `Taskfile.yml` (https://taskfile.dev). Требуется Go 1.25+.
+Task runner — `Taskfile.yml` (https://taskfile.dev). Требуется Go 1.26+.
 
 ```bash
 task build          # сборка бинарника

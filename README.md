@@ -73,7 +73,7 @@ docker run --rm \
   -p 9273:9273 \
   ghcr.io/batonogov/xray-health-exporter:latest
 
-# Локально (требуется Go 1.25+)
+# Локально (требуется Go 1.26+)
 export CONFIG_FILE=./config.yaml
 ./xray-health-exporter-linux-amd64
 ```
@@ -189,8 +189,12 @@ env:
 
 Поведение:
 - Только лидер инициализирует Xray-туннели и публикует `xray_tunnel_*` метрики; `xray_exporter_leader=1`.
-- Followers отвечают на `/metrics` и `/health`, но публикуют только `xray_exporter_leader=0`.
-- При падении/завершении лидера один из followers перехватывает Lease (по умолчанию через ~20–30s) и начинает опрашивать туннели.
+- Followers отвечают на `/metrics` и `/health`, но публикуют только `xray_exporter_leader=0` (никаких `xray_tunnel_*` серий).
+- При штатном завершении лидера (SIGTERM) Lease отпускается сразу (`ReleaseOnCancel`), и follower подхватывает за ~`RetryPeriod` (≈5s). При жёстком падении — за `LeaseDuration` (≈30s).
+
+⚠️ Если в одном namespace запущено несколько разных деплоев экспортёра, **обязательно** задайте свой `LEADER_ELECTION_NAME` каждому — иначе они начнут драться за один и тот же Lease.
+
+⚠️ `LEADER_ELECTION=true` требует запуска внутри Kubernetes pod-а (используется `InClusterConfig`). Вне кластера экспортёр упадёт с ошибкой загрузки конфига.
 
 Минимальный RBAC (создаст и обновит Lease):
 
@@ -217,11 +221,7 @@ subjects:
     name: xray-health-exporter
 ```
 
-Алерты можно фильтровать по `xray_exporter_leader == 1`, чтобы не получать дубли:
-
-```promql
-xray_tunnel_up * on(instance) group_left xray_exporter_leader == 0
-```
+Поскольку followers вообще не публикуют `xray_tunnel_*`, стандартные алерты (`xray_tunnel_up == 0`, `xray_tunnel_latency_seconds > X`) автоматически срабатывают только на данных лидера — дубликаты исключены без дополнительных PromQL-фильтров.
 
 ## Prometheus
 

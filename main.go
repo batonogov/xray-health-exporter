@@ -1389,11 +1389,12 @@ func runProbing(ctx context.Context, configFile string, debug bool) error {
 }
 
 // runWithLeaderElection starts a k8s lease-based leader election and runs runProbing
-// only on the leader. Blocks until ctx is canceled.
+// only on the leader. Requires running inside a pod (uses InClusterConfig). Blocks
+// until ctx is canceled.
 func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, configFile string, debug bool) error {
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load in-cluster config: %v", err)
+		return fmt.Errorf("failed to load in-cluster config (LEADER_ELECTION requires running inside a pod): %v", err)
 	}
 
 	client, err := kubernetes.NewForConfig(restConfig)
@@ -1412,9 +1413,7 @@ func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, confi
 		},
 	}
 
-	log.Printf("Leader election enabled: lease=%s/%s identity=%s", lec.Namespace, lec.Name, lec.Identity)
-
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+	elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 		Lock:            lock,
 		ReleaseOnCancel: true,
 		LeaseDuration:   lec.LeaseDuration,
@@ -1429,6 +1428,8 @@ func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, confi
 				}
 			},
 			OnStoppedLeading: func() {
+				// Per-tunnel metrics are cleared inside runProbing's deferred path;
+				// here we only flip the leader gauge so followers report leader=0.
 				log.Printf("Lost leadership, stopping probes")
 				exporterLeader.Set(0)
 			},
@@ -1440,7 +1441,12 @@ func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, confi
 			},
 		},
 	})
+	if err != nil {
+		return fmt.Errorf("failed to create leader elector: %v", err)
+	}
 
+	log.Printf("Leader election enabled: lease=%s/%s identity=%s", lec.Namespace, lec.Name, lec.Identity)
+	elector.Run(ctx)
 	return nil
 }
 
@@ -1466,6 +1472,13 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// When leader election is disabled this instance is the implicit leader for the
+	// lifetime of the process. Set the gauge before serving /metrics to avoid a
+	// brief window where scrapes see leader=0.
+	if lec == nil {
+		exporterLeader.Set(1)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -1495,7 +1508,6 @@ func main() {
 			}
 			return
 		}
-		exporterLeader.Set(1)
 		if err := runProbing(ctx, configFile, debug); err != nil {
 			log.Printf("Probing stopped: %v", err)
 		}

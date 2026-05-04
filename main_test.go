@@ -3259,6 +3259,11 @@ func TestInitTunnel_XrayConfigFile_FallbackName(t *testing.T) {
 }
 
 func TestReadLeaderElectionConfig(t *testing.T) {
+	// Restore the namespace file path after the test so subsequent tests
+	// don't see an overridden value.
+	origPath := serviceAccountNamespacePath
+	t.Cleanup(func() { serviceAccountNamespacePath = origPath })
+
 	leaderEnv := []string{
 		"LEADER_ELECTION",
 		"LEADER_ELECTION_NAMESPACE",
@@ -3268,14 +3273,15 @@ func TestReadLeaderElectionConfig(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		env        map[string]string
-		wantNil    bool
-		wantErr    bool
-		wantNs     string
-		wantLease  string
-		wantIdent  string
-		identityFn func() string // dynamic match (e.g. host fallback)
+		name          string
+		env           map[string]string
+		namespaceFile string // contents to write; empty means no file
+		wantNil       bool
+		wantErr       bool
+		wantNs        string
+		wantLease     string
+		wantIdent     string
+		identityFn    func() string // dynamic match (e.g. host fallback)
 	}{
 		{
 			name:    "disabled by default",
@@ -3316,6 +3322,17 @@ func TestReadLeaderElectionConfig(t *testing.T) {
 			wantIdent: "pod-a",
 		},
 		{
+			name: "namespace falls back to service-account file",
+			env: map[string]string{
+				"LEADER_ELECTION":          "true",
+				"LEADER_ELECTION_IDENTITY": "pod-a",
+			},
+			namespaceFile: "monitoring-from-file\n",
+			wantNs:        "monitoring-from-file",
+			wantLease:     "xray-health-exporter",
+			wantIdent:     "pod-a",
+		},
+		{
 			name: "identity falls back to HOSTNAME",
 			env: map[string]string{
 				"LEADER_ELECTION":           "true",
@@ -3340,7 +3357,7 @@ func TestReadLeaderElectionConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "missing namespace returns error (when not in pod)",
+			name: "missing namespace returns error",
 			env: map[string]string{
 				"LEADER_ELECTION":          "true",
 				"LEADER_ELECTION_IDENTITY": "pod-a",
@@ -3357,6 +3374,18 @@ func TestReadLeaderElectionConfig(t *testing.T) {
 			}
 			for k, v := range tt.env {
 				t.Setenv(k, v)
+			}
+
+			if tt.namespaceFile != "" {
+				path := filepath.Join(t.TempDir(), "namespace")
+				if err := os.WriteFile(path, []byte(tt.namespaceFile), 0644); err != nil {
+					t.Fatalf("write namespace file: %v", err)
+				}
+				serviceAccountNamespacePath = path
+			} else {
+				// Point at a non-existent path so this test is deterministic
+				// regardless of whether it runs inside a k8s pod.
+				serviceAccountNamespacePath = filepath.Join(t.TempDir(), "does-not-exist")
 			}
 
 			got, err := readLeaderElectionConfig()

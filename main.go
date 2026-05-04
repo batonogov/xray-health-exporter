@@ -1280,6 +1280,10 @@ type leaderElectionConfig struct {
 	RetryPeriod   time.Duration
 }
 
+// serviceAccountNamespacePath is the standard location of the in-pod namespace file.
+// Declared as a variable so tests can override it.
+var serviceAccountNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
 // readLeaderElectionConfig reads LEADER_ELECTION_* env vars and returns a
 // leaderElectionConfig if leader election is enabled, or (nil, nil) if disabled.
 func readLeaderElectionConfig() (*leaderElectionConfig, error) {
@@ -1289,8 +1293,7 @@ func readLeaderElectionConfig() (*leaderElectionConfig, error) {
 
 	namespace := os.Getenv("LEADER_ELECTION_NAMESPACE")
 	if namespace == "" {
-		// Standard service-account namespace path inside a pod.
-		if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		if data, err := os.ReadFile(serviceAccountNamespacePath); err == nil {
 			namespace = strings.TrimSpace(string(data))
 		}
 	}

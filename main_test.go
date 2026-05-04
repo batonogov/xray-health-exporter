@@ -3257,3 +3257,172 @@ func TestInitTunnel_XrayConfigFile_FallbackName(t *testing.T) {
 		t.Errorf("Name = %v, want tunnel-port-11091", ti.Name)
 	}
 }
+
+func TestReadLeaderElectionConfig(t *testing.T) {
+	// Restore the namespace file path after the test so subsequent tests
+	// don't see an overridden value.
+	origPath := serviceAccountNamespacePath
+	t.Cleanup(func() { serviceAccountNamespacePath = origPath })
+
+	leaderEnv := []string{
+		"LEADER_ELECTION",
+		"LEADER_ELECTION_NAMESPACE",
+		"LEADER_ELECTION_NAME",
+		"LEADER_ELECTION_IDENTITY",
+		"HOSTNAME",
+	}
+
+	tests := []struct {
+		name          string
+		env           map[string]string
+		namespaceFile string // contents to write; empty means no file
+		wantNil       bool
+		wantErr       bool
+		wantNs        string
+		wantLease     string
+		wantIdent     string
+		identityFn    func() string // dynamic match (e.g. host fallback)
+	}{
+		{
+			name:    "disabled by default",
+			env:     map[string]string{},
+			wantNil: true,
+		},
+		{
+			name:    "disabled when LEADER_ELECTION is not 'true'",
+			env:     map[string]string{"LEADER_ELECTION": "false"},
+			wantNil: true,
+		},
+		{
+			name:    "disabled when LEADER_ELECTION is '1'",
+			env:     map[string]string{"LEADER_ELECTION": "1"},
+			wantNil: true,
+		},
+		{
+			name: "enabled with all env vars",
+			env: map[string]string{
+				"LEADER_ELECTION":           "true",
+				"LEADER_ELECTION_NAMESPACE": "monitoring",
+				"LEADER_ELECTION_NAME":      "custom-lease",
+				"LEADER_ELECTION_IDENTITY":  "pod-a",
+			},
+			wantNs:    "monitoring",
+			wantLease: "custom-lease",
+			wantIdent: "pod-a",
+		},
+		{
+			name: "default lease name when only namespace set",
+			env: map[string]string{
+				"LEADER_ELECTION":           "true",
+				"LEADER_ELECTION_NAMESPACE": "monitoring",
+				"LEADER_ELECTION_IDENTITY":  "pod-a",
+			},
+			wantNs:    "monitoring",
+			wantLease: "xray-health-exporter",
+			wantIdent: "pod-a",
+		},
+		{
+			name: "namespace falls back to service-account file",
+			env: map[string]string{
+				"LEADER_ELECTION":          "true",
+				"LEADER_ELECTION_IDENTITY": "pod-a",
+			},
+			namespaceFile: "monitoring-from-file\n",
+			wantNs:        "monitoring-from-file",
+			wantLease:     "xray-health-exporter",
+			wantIdent:     "pod-a",
+		},
+		{
+			name: "identity falls back to HOSTNAME",
+			env: map[string]string{
+				"LEADER_ELECTION":           "true",
+				"LEADER_ELECTION_NAMESPACE": "monitoring",
+				"HOSTNAME":                  "host-from-env",
+			},
+			wantNs:    "monitoring",
+			wantLease: "xray-health-exporter",
+			wantIdent: "host-from-env",
+		},
+		{
+			name: "identity falls back to os.Hostname when HOSTNAME unset",
+			env: map[string]string{
+				"LEADER_ELECTION":           "true",
+				"LEADER_ELECTION_NAMESPACE": "monitoring",
+			},
+			wantNs:    "monitoring",
+			wantLease: "xray-health-exporter",
+			identityFn: func() string {
+				h, _ := os.Hostname()
+				return h
+			},
+		},
+		{
+			name: "missing namespace returns error",
+			env: map[string]string{
+				"LEADER_ELECTION":          "true",
+				"LEADER_ELECTION_IDENTITY": "pod-a",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, k := range leaderEnv {
+				t.Setenv(k, "")
+				os.Unsetenv(k)
+			}
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+
+			if tt.namespaceFile != "" {
+				path := filepath.Join(t.TempDir(), "namespace")
+				if err := os.WriteFile(path, []byte(tt.namespaceFile), 0644); err != nil {
+					t.Fatalf("write namespace file: %v", err)
+				}
+				serviceAccountNamespacePath = path
+			} else {
+				// Point at a non-existent path so this test is deterministic
+				// regardless of whether it runs inside a k8s pod.
+				serviceAccountNamespacePath = filepath.Join(t.TempDir(), "does-not-exist")
+			}
+
+			got, err := readLeaderElectionConfig()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil config, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected non-nil config")
+			}
+			if got.Namespace != tt.wantNs {
+				t.Errorf("Namespace = %q, want %q", got.Namespace, tt.wantNs)
+			}
+			if got.Name != tt.wantLease {
+				t.Errorf("Name = %q, want %q", got.Name, tt.wantLease)
+			}
+			wantIdent := tt.wantIdent
+			if tt.identityFn != nil {
+				wantIdent = tt.identityFn()
+			}
+			if got.Identity != wantIdent {
+				t.Errorf("Identity = %q, want %q", got.Identity, wantIdent)
+			}
+			if got.LeaseDuration <= got.RenewDeadline {
+				t.Errorf("LeaseDuration (%v) must be greater than RenewDeadline (%v)", got.LeaseDuration, got.RenewDeadline)
+			}
+			if got.RenewDeadline <= got.RetryPeriod {
+				t.Errorf("RenewDeadline (%v) must be greater than RetryPeriod (%v)", got.RenewDeadline, got.RetryPeriod)
+			}
+		})
+	}
+}

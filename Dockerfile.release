@@ -1,0 +1,23 @@
+FROM alpine:3.23.4
+
+ARG TARGETARCH
+ARG VERSION=dev
+
+LABEL org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://github.com/batonogov/xray-health-exporter"
+
+RUN apk --no-cache --no-scripts add ca-certificates && \
+    addgroup -g 10001 xray && \
+    adduser -D -u 10001 -G xray xray
+
+WORKDIR /app
+
+COPY --chown=xray:xray --chmod=0755 \
+    artifacts/xray-health-exporter-linux-${TARGETARCH}/xray-health-exporter-linux-${TARGETARCH} \
+    /app/xray-health-exporter
+
+USER xray
+
+EXPOSE 9273
+
+CMD ["./xray-health-exporter"]

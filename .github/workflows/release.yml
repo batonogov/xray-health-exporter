@@ -63,13 +63,19 @@ jobs:
           path: xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
 
   docker:
-    needs: version
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Скачивание собранных бинарников
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: xray-health-exporter-linux-*
 
       - name: Настройка Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -85,6 +91,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           build-args: |

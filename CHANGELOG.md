@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/batonogov/xray-health-exporter/compare/v1.2.0...v1.2.1) (2026-05-04)
+
+
+### Dependencies
+
+* **deps:** bump github.com/fsnotify/fsnotify ([#77](https://github.com/batonogov/xray-health-exporter/issues/77)) ([5d85987](https://github.com/batonogov/xray-health-exporter/commit/5d85987d4039faf45305e8e2cc9d05198f14d7cb))
+
 ## [1.2.0](https://github.com/batonogov/xray-health-exporter/compare/v1.1.2...v1.2.0) (2026-05-04)
 
 

@@ -37,6 +37,15 @@ docker pull ghcr.io/batonogov/xray-health-exporter:latest
 
 > 🔒 Docker образ запускается от непривилегированного пользователя `xray` (UID 10001)
 
+**Helm (Kubernetes):**
+
+```bash
+helm repo add batonogov https://batonogov.github.io/helm-charts
+helm install xray-health-exporter batonogov/xray-health-exporter -f values.yaml
+```
+
+См. [`charts/xray-health-exporter`](https://github.com/batonogov/helm-charts/tree/main/charts/xray-health-exporter) — чарт включает leader election, RBAC под Lease и опциональный `ServiceMonitor`.
+
 ## Быстрый старт
 
 1. **Создайте конфигурационный файл** `config.yaml`:
@@ -170,6 +179,14 @@ tunnels:
 | `LEADER_ELECTION_IDENTITY` | `$HOSTNAME` | Уникальный ID реплики |
 
 ## Высокая доступность (Kubernetes)
+
+> 📦 Готовый Helm-чарт: **[`batonogov/xray-health-exporter`](https://github.com/batonogov/helm-charts/tree/main/charts/xray-health-exporter)** — поднимает экспортёр со всем нижеописанным «из коробки» (replicas, leader election, RBAC под Lease, опциональные `ServiceMonitor` / `PrometheusRule`).
+>
+> ```bash
+> helm repo add batonogov https://batonogov.github.io/helm-charts
+> helm install xray-health-exporter batonogov/xray-health-exporter \
+>   -f values.yaml
+> ```
 
 При запуске с `replicas: >1` и скрейпом через `ServiceMonitor` Prometheus попадёт на каждый pod независимо, и метрики туннелей задублируются. Чтобы решить это, включите leader election:
 

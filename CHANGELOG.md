@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/batonogov/xray-health-exporter/compare/v1.1.2...v1.2.0) (2026-05-04)
+
+
+### Features
+
+* add Kubernetes leader election for HA deployments ([#72](https://github.com/batonogov/xray-health-exporter/issues/72)) ([a9abe80](https://github.com/batonogov/xray-health-exporter/commit/a9abe80744647e2a5a36c6638e18e69ce07fa584))
+
 ## [1.1.2](https://github.com/batonogov/xray-health-exporter/compare/v1.1.1...v1.1.2) (2026-04-10)
 
 

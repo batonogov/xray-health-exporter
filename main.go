@@ -27,6 +27,11 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf"
 	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	_ "github.com/xtls/xray-core/main/distro/all"
 )
@@ -85,6 +90,13 @@ var (
 		},
 		[]string{"name", "server", "security", "sni"},
 	)
+
+	exporterLeader = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "xray_exporter_leader",
+			Help: "1 if this exporter instance is actively probing tunnels (leader, or leader election disabled), 0 otherwise",
+		},
+	)
 )
 
 func init() {
@@ -93,6 +105,7 @@ func init() {
 	prometheus.MustRegister(tunnelCheckTotal)
 	prometheus.MustRegister(tunnelLastSuccess)
 	prometheus.MustRegister(tunnelHTTPStatus)
+	prometheus.MustRegister(exporterLeader)
 }
 
 // Config structures
@@ -1257,10 +1270,183 @@ func watchSubscriptions(ctx context.Context, tm *TunnelManager, configFile strin
 	}
 }
 
+// leaderElectionConfig holds parameters for k8s lease-based leader election.
+type leaderElectionConfig struct {
+	Namespace     string
+	Name          string
+	Identity      string
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
+}
+
+// readLeaderElectionConfig reads LEADER_ELECTION_* env vars and returns a
+// leaderElectionConfig if leader election is enabled, or (nil, nil) if disabled.
+func readLeaderElectionConfig() (*leaderElectionConfig, error) {
+	if os.Getenv("LEADER_ELECTION") != "true" {
+		return nil, nil
+	}
+
+	namespace := os.Getenv("LEADER_ELECTION_NAMESPACE")
+	if namespace == "" {
+		// Standard service-account namespace path inside a pod.
+		if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+			namespace = strings.TrimSpace(string(data))
+		}
+	}
+	if namespace == "" {
+		return nil, fmt.Errorf("LEADER_ELECTION_NAMESPACE is required (or run inside a pod)")
+	}
+
+	name := os.Getenv("LEADER_ELECTION_NAME")
+	if name == "" {
+		name = "xray-health-exporter"
+	}
+
+	identity := os.Getenv("LEADER_ELECTION_IDENTITY")
+	if identity == "" {
+		identity = os.Getenv("HOSTNAME")
+	}
+	if identity == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine leader election identity: %v", err)
+		}
+		identity = hostname
+	}
+
+	return &leaderElectionConfig{
+		Namespace:     namespace,
+		Name:          name,
+		Identity:      identity,
+		LeaseDuration: 30 * time.Second,
+		RenewDeadline: 20 * time.Second,
+		RetryPeriod:   5 * time.Second,
+	}, nil
+}
+
+// runProbing initializes tunnels, starts watchers, and blocks until ctx is canceled.
+// On return all tunnel instances are stopped and per-tunnel metrics are cleared.
+func runProbing(ctx context.Context, configFile string, debug bool) error {
+	config, err := loadConfig(configFile)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	subTunnels := resolveSubscriptions(config)
+	config.Tunnels = append(config.Tunnels, subTunnels...)
+
+	if len(config.Tunnels) == 0 {
+		return fmt.Errorf("no tunnels to initialize (including subscriptions)")
+	}
+
+	if debug {
+		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
+	}
+
+	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
+
+	tunnelInstances, err := initializeTunnels(config, debug, defaultSocksPort)
+	if err != nil {
+		return fmt.Errorf("failed to initialize tunnels: %v", err)
+	}
+
+	tunnelManager.mu.Lock()
+	tunnelManager.instances = tunnelInstances
+	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
+	tunnelManager.config = config
+	tunnelManager.mu.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := watchConfigFile(ctx, tunnelManager, configFile, debug); err != nil {
+			log.Printf("File watcher stopped: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		watchSubscriptions(ctx, tunnelManager, configFile, debug)
+	}()
+
+	log.Printf("Probing started for %d tunnels", len(tunnelInstances))
+	log.Printf("Config auto-reload enabled for: %s", configFile)
+
+	<-ctx.Done()
+
+	tunnelManager.mu.Lock()
+	finalInstances := tunnelManager.instances
+	tunnelManager.instances = nil
+	tunnelManager.mu.Unlock()
+
+	stopTunnels(finalInstances)
+	cleanupRemovedTunnelMetrics(finalInstances, nil)
+
+	wg.Wait()
+	log.Printf("Probing stopped")
+	return nil
+}
+
+// runWithLeaderElection starts a k8s lease-based leader election and runs runProbing
+// only on the leader. Blocks until ctx is canceled.
+func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, configFile string, debug bool) error {
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load in-cluster config: %v", err)
+	}
+
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %v", err)
+	}
+
+	lock := &resourcelock.LeaseLock{
+		LeaseMeta: metav1.ObjectMeta{
+			Name:      lec.Name,
+			Namespace: lec.Namespace,
+		},
+		Client: client.CoordinationV1(),
+		LockConfig: resourcelock.ResourceLockConfig{
+			Identity: lec.Identity,
+		},
+	}
+
+	log.Printf("Leader election enabled: lease=%s/%s identity=%s", lec.Namespace, lec.Name, lec.Identity)
+
+	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+		Lock:            lock,
+		ReleaseOnCancel: true,
+		LeaseDuration:   lec.LeaseDuration,
+		RenewDeadline:   lec.RenewDeadline,
+		RetryPeriod:     lec.RetryPeriod,
+		Callbacks: leaderelection.LeaderCallbacks{
+			OnStartedLeading: func(leaderCtx context.Context) {
+				log.Printf("Acquired leadership, starting probes")
+				exporterLeader.Set(1)
+				if err := runProbing(leaderCtx, configFile, debug); err != nil {
+					log.Printf("Probing error while leader: %v", err)
+				}
+			},
+			OnStoppedLeading: func() {
+				log.Printf("Lost leadership, stopping probes")
+				exporterLeader.Set(0)
+			},
+			OnNewLeader: func(identity string) {
+				if identity == lec.Identity {
+					return
+				}
+				log.Printf("New leader elected: %s", identity)
+			},
+		},
+	})
+
+	return nil
+}
+
 func main() {
 	log.Printf("xray-health-exporter %s", Version)
 
-	// Get config file path
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile == "" {
 		configFile = defaultConfigFile
@@ -1273,60 +1459,14 @@ func main() {
 
 	debug := os.Getenv("DEBUG") == "true"
 
-	// Load config
-	config, err := loadConfig(configFile)
+	lec, err := readLeaderElectionConfig()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Resolve subscriptions at startup
-	subTunnels := resolveSubscriptions(config)
-	config.Tunnels = append(config.Tunnels, subTunnels...)
-
-	if len(config.Tunnels) == 0 {
-		log.Fatalf("No tunnels to initialize (including subscriptions)")
-	}
-
-	if debug {
-		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
+		log.Fatalf("Invalid leader election config: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Initialize tunnel manager
-	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
-
-	// Initialize all tunnels
-	tunnelInstances, err := initializeTunnels(config, debug, defaultSocksPort)
-	if err != nil {
-		log.Fatalf("Failed to initialize tunnels: %v", err)
-	}
-
-	tunnelManager.mu.Lock()
-	tunnelManager.instances = tunnelInstances
-	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
-	tunnelManager.config = config
-	tunnelManager.mu.Unlock()
-
-	// Cleanup on exit
-	defer func() {
-		tunnelManager.mu.RLock()
-		stopTunnels(tunnelManager.instances)
-		tunnelManager.mu.RUnlock()
-	}()
-
-	// Start file watcher for automatic config reload
-	go func() {
-		if err := watchConfigFile(ctx, tunnelManager, configFile, debug); err != nil {
-			log.Printf("File watcher stopped: %v", err)
-		}
-	}()
-
-	// Start subscription watcher
-	go watchSubscriptions(ctx, tunnelManager, configFile, debug)
-
-	// HTTP server for metrics
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -1340,28 +1480,48 @@ func main() {
 	}
 
 	log.Printf("Metrics server listening on %s", listenAddr)
-	log.Printf("Config auto-reload enabled for: %s", configFile)
 
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- server.ListenAndServe()
 	}()
 
+	probingDone := make(chan struct{})
+	go func() {
+		defer close(probingDone)
+		if lec != nil {
+			if err := runWithLeaderElection(ctx, lec, configFile, debug); err != nil {
+				log.Printf("Leader election stopped: %v", err)
+			}
+			return
+		}
+		exporterLeader.Set(1)
+		if err := runProbing(ctx, configFile, debug); err != nil {
+			log.Printf("Probing stopped: %v", err)
+		}
+	}()
+
 	select {
 	case err := <-serverErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("HTTP server error: %v", err)
+			log.Printf("HTTP server error: %v", err)
 		}
 	case <-ctx.Done():
-		log.Printf("Shutdown signal received, stopping HTTP server")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP server shutdown error: %v", err)
-		}
-		err := <-serverErr
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("HTTP server error: %v", err)
-		}
+	case <-probingDone:
+		log.Printf("Probing exited unexpectedly, shutting down")
+	}
+
+	log.Printf("Shutdown signal received, stopping HTTP server")
+	stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	select {
+	case <-probingDone:
+	case <-time.After(15 * time.Second):
+		log.Printf("Probing did not stop within 15s, exiting anyway")
 	}
 }

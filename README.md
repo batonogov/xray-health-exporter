@@ -87,6 +87,7 @@ export CONFIG_FILE=./config.yaml
 - `xray_tunnel_check_total{name, server, security, sni, result}` - счётчик проверок
 - `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp последней успешной проверки
 - `xray_tunnel_http_status{name, server, security, sni}` - HTTP статус код при проверке
+- `xray_exporter_leader` - 1 если этот инстанс активно опрашивает туннели (лидер или leader election выключен), 0 иначе
 
 **Пример метрик:**
 ```
@@ -163,6 +164,64 @@ tunnels:
 | `LISTEN_ADDR` | `:9273` | Адрес HTTP сервера |
 | `XRAY_LOG_LEVEL` | `warning` | Уровень логов Xray |
 | `DEBUG` | `false` | Детальный вывод |
+| `LEADER_ELECTION` | `false` | Включить k8s leader election (см. ниже) |
+| `LEADER_ELECTION_NAMESPACE` | namespace pod-а | Namespace для Lease объекта |
+| `LEADER_ELECTION_NAME` | `xray-health-exporter` | Имя Lease |
+| `LEADER_ELECTION_IDENTITY` | `$HOSTNAME` | Уникальный ID реплики |
+
+## Высокая доступность (Kubernetes)
+
+При запуске с `replicas: >1` и скрейпом через `ServiceMonitor` Prometheus попадёт на каждый pod независимо, и метрики туннелей задублируются. Чтобы решить это, включите leader election:
+
+```yaml
+env:
+  - name: LEADER_ELECTION
+    value: "true"
+  - name: LEADER_ELECTION_IDENTITY
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+  - name: LEADER_ELECTION_NAMESPACE
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace
+```
+
+Поведение:
+- Только лидер инициализирует Xray-туннели и публикует `xray_tunnel_*` метрики; `xray_exporter_leader=1`.
+- Followers отвечают на `/metrics` и `/health`, но публикуют только `xray_exporter_leader=0`.
+- При падении/завершении лидера один из followers перехватывает Lease (по умолчанию через ~20–30s) и начинает опрашивать туннели.
+
+Минимальный RBAC (создаст и обновит Lease):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: xray-health-exporter
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: xray-health-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: xray-health-exporter
+subjects:
+  - kind: ServiceAccount
+    name: xray-health-exporter
+```
+
+Алерты можно фильтровать по `xray_exporter_leader == 1`, чтобы не получать дубли:
+
+```promql
+xray_tunnel_up * on(instance) group_left xray_exporter_leader == 0
+```
 
 ## Prometheus
 

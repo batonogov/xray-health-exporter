@@ -7,6 +7,9 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -14,6 +17,9 @@ updates:
     groups:
       docker-dependencies:
         patterns: ["*"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
@@ -21,3 +27,6 @@ updates:
     groups:
       go-dependencies:
         patterns: ["*"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"

@@ -13,6 +13,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       version_short: ${{ steps.version.outputs.version_short }}
+      version_major: ${{ steps.version.outputs.version_major }}
     steps:
       - name: Извлечение версии из тега
         id: version
@@ -20,10 +21,13 @@ jobs:
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
           echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
-          # v1.2.3 -> 1.2
-          SHORT=$(echo "$TAG_NAME" | sed 's/^v//' | cut -d. -f1,2)
+          # v1.2.3 -> v1.2
+          SHORT=$(echo "$TAG_NAME" | cut -d. -f1,2)
           echo "version_short=$SHORT" >> $GITHUB_OUTPUT
-          echo "Версия: $TAG_NAME (короткая: $SHORT)"
+          # v1.2.3 -> v1
+          MAJOR=$(echo "$TAG_NAME" | cut -d. -f1)
+          echo "version_major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "Версия: $TAG_NAME (короткая: $SHORT, major: $MAJOR)"
 
   build:
     needs: version
@@ -102,6 +106,7 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version_short }}
+            ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version_major }}
             ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

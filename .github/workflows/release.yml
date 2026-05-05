@@ -82,7 +82,7 @@ jobs:
           pattern: xray-health-exporter-linux-*
 
       - name: Настройка QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Настройка Docker Buildx
         uses: docker/setup-buildx-action@v4

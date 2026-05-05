@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/batonogov/xray-health-exporter/compare/v1.2.1...v1.2.2) (2026-05-05)
+
+
+### Bug Fixes
+
+* publish versioned Docker aliases with v prefix ([#81](https://github.com/batonogov/xray-health-exporter/issues/81)) ([fe890ac](https://github.com/batonogov/xray-health-exporter/commit/fe890aca0e20e68ce31f410a17fcaa104da52516))
+
 ## [1.2.1](https://github.com/batonogov/xray-health-exporter/compare/v1.2.0...v1.2.1) (2026-05-04)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.3](https://github.com/batonogov/xray-health-exporter/compare/v1.2.2...v1.2.3) (2026-05-13)
+
+
+### Dependencies
+
+* **deps:** bump docker/setup-qemu-action in the github-actions group ([#83](https://github.com/batonogov/xray-health-exporter/issues/83)) ([732fe24](https://github.com/batonogov/xray-health-exporter/commit/732fe24e8a8b52874328323e767943eebb537264))
+* **deps:** bump golang in the docker-dependencies group ([#85](https://github.com/batonogov/xray-health-exporter/issues/85)) ([1bfaf5d](https://github.com/batonogov/xray-health-exporter/commit/1bfaf5de9d12aa387ff799243f0b4db2b4c5d490))
+
 ## [1.2.2](https://github.com/batonogov/xray-health-exporter/compare/v1.2.1...v1.2.2) (2026-05-05)
 
 

@@ -1,5 +1,7 @@
 # Xray Health Exporter
 
+[🇷🇺 Русский](README.md) | [🇬🇧 English](README.en.md)
+
 [![🧪 Тестирование](https://github.com/batonogov/xray-health-exporter/actions/workflows/test.yml/badge.svg)](https://github.com/batonogov/xray-health-exporter/actions/workflows/test.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/batonogov/xray-health-exporter)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

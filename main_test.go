@@ -237,7 +237,7 @@ func TestCreateStreamSettings(t *testing.T) {
 			},
 		},
 		{
-			name: "grpc settings minimal",
+			name: "grpc settings minimal (authority falls back to SNI)",
 			config: &VLESSConfig{
 				Type:        "grpc",
 				Security:    "tls",
@@ -256,11 +256,30 @@ func TestCreateStreamSettings(t *testing.T) {
 				if grpc["serviceName"] != "minimal-service" {
 					t.Errorf("serviceName = %v, want minimal-service", grpc["serviceName"])
 				}
-				if _, exists := grpc["authority"]; exists {
-					t.Error("authority should not be set when empty")
+				if grpc["authority"] != "minimal.example.com" {
+					t.Errorf("authority = %v, want minimal.example.com (SNI fallback)", grpc["authority"])
 				}
 				if _, exists := grpc["multiMode"]; exists {
 					t.Error("multiMode should not be set when false")
+				}
+			},
+		},
+		{
+			name: "grpc settings authority falls back to address without SNI",
+			config: &VLESSConfig{
+				Type:        "grpc",
+				Security:    "reality",
+				ServiceName: "my-service",
+				Address:     "10.0.0.1",
+				FP:          "chrome",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				grpc, ok := settings["grpcSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("grpcSettings not found")
+				}
+				if grpc["authority"] != "10.0.0.1" {
+					t.Errorf("authority = %v, want 10.0.0.1 (address fallback)", grpc["authority"])
 				}
 			},
 		},

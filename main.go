@@ -149,6 +149,8 @@ type VLESSConfig struct {
 	ServiceName string
 	Authority   string
 	MultiMode   bool
+	Host        string
+	Path        string
 }
 
 // MetricLabels holds protocol-agnostic labels for Prometheus metrics.
@@ -378,6 +380,12 @@ func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {
 	config.ServiceName = query.Get("serviceName")
 	config.Authority = query.Get("authority")
 	config.MultiMode = query.Get("multiMode") == "true"
+	config.Host = query.Get("host")
+	config.Path = query.Get("path")
+
+	if config.Type == "grpc" && config.ServiceName == "" {
+		return nil, fmt.Errorf("serviceName is required for grpc transport")
+	}
 
 	return config, nil
 }
@@ -455,6 +463,20 @@ func createStreamSettings(vlessConfig *VLESSConfig) map[string]interface{} {
 			grpcSettings["multiMode"] = true
 		}
 		streamSettings["grpcSettings"] = grpcSettings
+	}
+
+	// Add wsSettings for WebSocket transport
+	if vlessConfig.Type == "ws" {
+		wsSettings := map[string]interface{}{}
+		if vlessConfig.Path != "" {
+			wsSettings["path"] = vlessConfig.Path
+		}
+		if vlessConfig.Host != "" {
+			wsSettings["headers"] = map[string]interface{}{
+				"Host": vlessConfig.Host,
+			}
+		}
+		streamSettings["wsSettings"] = wsSettings
 	}
 
 	if vlessConfig.Security == "reality" {

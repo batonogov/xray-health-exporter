@@ -46,7 +46,7 @@ func TestParseVLESSURL(t *testing.T) {
 		},
 		{
 			name: "valid vless url with tls",
-			url:  "vless://uuid-456@server.net:8443?type=ws&security=tls&sni=server.net&fp=firefox",
+			url:  "vless://uuid-456@server.net:8443?type=ws&security=tls&sni=server.net&fp=firefox&host=server.net&path=%2Fws",
 			want: &VLESSConfig{
 				UUID:     "uuid-456",
 				Address:  "server.net",
@@ -55,6 +55,8 @@ func TestParseVLESSURL(t *testing.T) {
 				Security: "tls",
 				SNI:      "server.net",
 				FP:       "firefox",
+				Host:     "server.net",
+				Path:     "/ws",
 			},
 			wantErr: false,
 		},
@@ -92,6 +94,11 @@ func TestParseVLESSURL(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name:    "grpc without serviceName",
+			url:     "vless://uuid@grpc.example.com:443/?type=grpc&security=reality&pbk=key&fp=chrome&sni=grpc.example.com",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +132,12 @@ func TestParseVLESSURL(t *testing.T) {
 				}
 				if got.MultiMode != tt.want.MultiMode {
 					t.Errorf("MultiMode = %v, want %v", got.MultiMode, tt.want.MultiMode)
+				}
+				if got.Host != tt.want.Host {
+					t.Errorf("Host = %v, want %v", got.Host, tt.want.Host)
+				}
+				if got.Path != tt.want.Path {
+					t.Errorf("Path = %v, want %v", got.Path, tt.want.Path)
 				}
 			}
 		})
@@ -251,6 +264,60 @@ func TestCreateStreamSettings(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "ws settings with host and path",
+			config: &VLESSConfig{
+				Type:     "ws",
+				Security: "tls",
+				Host:     "ws.example.com",
+				Path:     "/ws-path",
+				SNI:      "ws.example.com",
+				FP:       "chrome",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				if settings["network"] != "ws" {
+					t.Errorf("network = %v, want ws", settings["network"])
+				}
+				ws, ok := settings["wsSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("wsSettings not found")
+				}
+				if ws["path"] != "/ws-path" {
+					t.Errorf("path = %v, want /ws-path", ws["path"])
+				}
+				headers, ok := ws["headers"].(map[string]interface{})
+				if !ok {
+					t.Fatal("wsSettings.headers not found")
+				}
+				if headers["Host"] != "ws.example.com" {
+					t.Errorf("headers.Host = %v, want ws.example.com", headers["Host"])
+				}
+			},
+		},
+		{
+			name: "ws settings without host and path",
+			config: &VLESSConfig{
+				Type:     "ws",
+				Security: "tls",
+				SNI:      "ws.example.com",
+				FP:       "chrome",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				if settings["network"] != "ws" {
+					t.Errorf("network = %v, want ws", settings["network"])
+				}
+				ws, ok := settings["wsSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("wsSettings not found")
+				}
+				if _, exists := ws["path"]; exists {
+					t.Error("path should not be set when empty")
+				}
+				if _, exists := ws["headers"]; exists {
+					t.Error("headers should not be set when host is empty")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -322,6 +389,65 @@ func TestCreateXrayConfig(t *testing.T) {
 	users := vnext["users"].([]interface{})[0].(map[string]interface{})
 	if users["id"] != "test-uuid" {
 		t.Errorf("user id = %v, want test-uuid", users["id"])
+	}
+}
+
+func TestCreateXrayConfig_gRPC(t *testing.T) {
+	config := &VLESSConfig{
+		UUID:        "grpc-uuid",
+		Address:     "grpc.example.com",
+		Port:        443,
+		Type:        "grpc",
+		Security:    "reality",
+		ServiceName: "grpc-service",
+		Authority:   "grpc-host",
+		MultiMode:   true,
+		PBK:         "test-key",
+		SNI:         "grpc.example.com",
+		FP:          "chrome",
+		SID:         "ab12cd34",
+	}
+
+	jsonData, err := createXrayConfig(config, 1081)
+	if err != nil {
+		t.Fatalf("createXrayConfig() error = %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(jsonData, &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	outbounds := result["outbounds"].([]interface{})
+	outbound := outbounds[0].(map[string]interface{})
+	ss := outbound["streamSettings"].(map[string]interface{})
+
+	if ss["network"] != "grpc" {
+		t.Errorf("network = %v, want grpc", ss["network"])
+	}
+	if ss["security"] != "reality" {
+		t.Errorf("security = %v, want reality", ss["security"])
+	}
+
+	grpc, ok := ss["grpcSettings"].(map[string]interface{})
+	if !ok {
+		t.Fatal("grpcSettings not found in streamSettings")
+	}
+	if grpc["serviceName"] != "grpc-service" {
+		t.Errorf("serviceName = %v, want grpc-service", grpc["serviceName"])
+	}
+	if grpc["authority"] != "grpc-host" {
+		t.Errorf("authority = %v, want grpc-host", grpc["authority"])
+	}
+	if grpc["multiMode"] != true {
+		t.Errorf("multiMode = %v, want true", grpc["multiMode"])
+	}
+
+	// Verify SOCKS port
+	inbounds := result["inbounds"].([]interface{})
+	inbound := inbounds[0].(map[string]interface{})
+	if inbound["port"].(float64) != 1081 {
+		t.Errorf("inbound port = %v, want 1081", inbound["port"])
 	}
 }
 

@@ -136,16 +136,21 @@ type Tunnel struct {
 }
 
 type VLESSConfig struct {
-	UUID     string
-	Address  string
-	Port     int
-	Security string
-	PBK      string
-	SNI      string
-	FP       string
-	SID      string
-	SPX      string
-	Type     string
+	UUID        string
+	Address     string
+	Port        int
+	Security    string
+	PBK         string
+	SNI         string
+	FP          string
+	SID         string
+	SPX         string
+	Type        string
+	ServiceName string
+	Authority   string
+	MultiMode   bool
+	Host        string
+	Path        string
 }
 
 // MetricLabels holds protocol-agnostic labels for Prometheus metrics.
@@ -372,6 +377,15 @@ func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {
 	config.FP = query.Get("fp")
 	config.SID = query.Get("sid")
 	config.SPX = query.Get("spx")
+	config.ServiceName = query.Get("serviceName")
+	config.Authority = query.Get("authority")
+	config.MultiMode = query.Get("multiMode") == "true"
+	config.Host = query.Get("host")
+	config.Path = query.Get("path")
+
+	if config.Type == "grpc" && config.ServiceName == "" {
+		return nil, fmt.Errorf("serviceName is required for grpc transport")
+	}
 
 	return config, nil
 }
@@ -435,6 +449,34 @@ func createStreamSettings(vlessConfig *VLESSConfig) map[string]interface{} {
 				"type": "none",
 			},
 		}
+	}
+
+	// Add grpcSettings for gRPC transport
+	if vlessConfig.Type == "grpc" {
+		grpcSettings := map[string]interface{}{
+			"serviceName": vlessConfig.ServiceName,
+		}
+		if vlessConfig.Authority != "" {
+			grpcSettings["authority"] = vlessConfig.Authority
+		}
+		if vlessConfig.MultiMode {
+			grpcSettings["multiMode"] = true
+		}
+		streamSettings["grpcSettings"] = grpcSettings
+	}
+
+	// Add wsSettings for WebSocket transport
+	if vlessConfig.Type == "ws" {
+		wsSettings := map[string]interface{}{}
+		if vlessConfig.Path != "" {
+			wsSettings["path"] = vlessConfig.Path
+		}
+		if vlessConfig.Host != "" {
+			wsSettings["headers"] = map[string]interface{}{
+				"Host": vlessConfig.Host,
+			}
+		}
+		streamSettings["wsSettings"] = wsSettings
 	}
 
 	if vlessConfig.Security == "reality" {

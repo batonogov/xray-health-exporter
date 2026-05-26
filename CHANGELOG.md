@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/batonogov/xray-health-exporter/compare/v1.2.3...v1.3.0) (2026-05-26)
+
+
+### Features
+
+* structured logging (slog) ([#89](https://github.com/batonogov/xray-health-exporter/issues/89)) ([c4a8940](https://github.com/batonogov/xray-health-exporter/commit/c4a8940e87e1f4ebc32078092132bad95ccba2e9))
+* support gRPC transport in VLESS URL parsing ([#91](https://github.com/batonogov/xray-health-exporter/issues/91)) ([5b7b06d](https://github.com/batonogov/xray-health-exporter/commit/5b7b06d58b825bbe08ef0edd6cfc4f0352d3556e))
+
+
+### Dependencies
+
+* **deps:** bump the go-dependencies group with 2 updates ([#86](https://github.com/batonogov/xray-health-exporter/issues/86)) ([0a8bb09](https://github.com/batonogov/xray-health-exporter/commit/0a8bb090a002e2c99669f0c77dc9c59cee3fee91))
+
 ## [1.2.3](https://github.com/batonogov/xray-health-exporter/compare/v1.2.2...v1.2.3) (2026-05-13)
 
 

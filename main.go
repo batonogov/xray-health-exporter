@@ -637,7 +637,7 @@ func initTunnel(tunnel *Tunnel, socksPort int) (*TunnelInstance, error) {
 		}
 	}
 
-	slog.Debug("xray config", "tunnel", tunnel.Name, "config", string(xrayConfigJSON))
+	slog.Debug("xray config", "tunnel", tunnel.Name, "config", slog.String("config_json", string(xrayConfigJSON)))
 
 	xrayInstance, err := startXray(xrayConfigJSON)
 	if err != nil {
@@ -1148,7 +1148,7 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string) 
 		}
 
 		if err := watcher.Remove(absConfig); err != nil {
-			slog.Error("failed to remove config file watch", "path", absConfig, "error", err)
+			slog.Debug("failed to remove config file watch", "path", absConfig, "error", err)
 		}
 		fileWatchActive = false
 	}
@@ -1358,7 +1358,7 @@ func runProbing(ctx context.Context, configFile string) error {
 	go func() {
 		defer wg.Done()
 		if err := watchConfigFile(ctx, tunnelManager, configFile); err != nil {
-			slog.Warn("file watcher stopped", "error", err)
+			slog.Error("file watcher stopped", "error", err)
 		}
 	}()
 	go func() {
@@ -1470,6 +1470,7 @@ func setupLogger() {
 	case "error":
 		level = slog.LevelError
 	default:
+		slog.Warn("unknown LOG_LEVEL, falling back to info", "log_level", levelStr)
 		level = slog.LevelInfo
 	}
 

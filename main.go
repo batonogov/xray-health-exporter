@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -316,7 +316,7 @@ func resolveSubscriptions(config *Config) []Tunnel {
 	for i, sub := range config.Subscriptions {
 		tunnels, err := fetchSubscription(sub.URL)
 		if err != nil {
-			log.Printf("Failed to fetch subscription %d (%s): %v", i, sub.URL, err)
+			slog.Error("failed to fetch subscription", "index", i, "url", sub.URL, "error", err)
 			continue
 		}
 
@@ -326,7 +326,7 @@ func resolveSubscriptions(config *Config) []Tunnel {
 			if strings.HasPrefix(t.URL, "vless://") {
 				supported = append(supported, t)
 			} else {
-				log.Printf("Subscription %d: skipping unsupported URL scheme: %s", i, t.Name)
+				slog.Warn("skipping unsupported URL scheme", "subscription_index", i, "tunnel", t.Name)
 			}
 		}
 		tunnels = supported
@@ -336,7 +336,7 @@ func resolveSubscriptions(config *Config) []Tunnel {
 			applyTunnelDefaults(&tunnels[j], config.Defaults)
 		}
 
-		log.Printf("Subscription %d: fetched %d tunnels", i, len(tunnels))
+		slog.Debug("subscription fetched tunnels", "subscription_index", i, "count", len(tunnels))
 		allTunnels = append(allTunnels, tunnels...)
 	}
 
@@ -597,7 +597,7 @@ func extractMetricLabelsFromXrayConfig(raw map[string]interface{}) MetricLabels 
 	return labels
 }
 
-func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, error) {
+func initTunnel(tunnel *Tunnel, socksPort int) (*TunnelInstance, error) {
 	checkInterval, err := time.ParseDuration(tunnel.CheckInterval)
 	if err != nil {
 		return nil, fmt.Errorf("invalid check_interval: %v", err)
@@ -637,9 +637,7 @@ func initTunnel(tunnel *Tunnel, socksPort int, debug bool) (*TunnelInstance, err
 		}
 	}
 
-	if debug {
-		log.Printf("[%s] Xray config: %s", tunnel.Name, string(xrayConfigJSON))
-	}
+	slog.Debug("xray config", "tunnel", tunnel.Name, "config", string(xrayConfigJSON))
 
 	xrayInstance, err := startXray(xrayConfigJSON)
 	if err != nil {
@@ -793,7 +791,7 @@ func checkTunnel(ti *TunnelInstance) {
 	// Сначала проверим что SOCKS5 прокси вообще работает
 	conn, err := net.DialTimeout("tcp", socksProxy, min(socksDialTimeout, ti.CheckTimeout))
 	if err != nil {
-		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
+		slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", err)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
@@ -815,7 +813,7 @@ func checkTunnel(ti *TunnelInstance) {
 
 	resp, err := client.Get(ti.CheckURL)
 	if err != nil {
-		log.Printf("[%s] ✗ Tunnel DOWN: %v", ti.Name, err)
+		slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", err)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
@@ -826,7 +824,7 @@ func checkTunnel(ti *TunnelInstance) {
 	tunnelHTTPStatus.With(labels).Set(float64(resp.StatusCode))
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusTemporaryRedirect {
-		log.Printf("[%s] ✗ Tunnel DOWN: status %d", ti.Name, resp.StatusCode)
+		slog.Error("tunnel DOWN", "tunnel", ti.Name, "status_code", resp.StatusCode)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(resultLabels("failure")).Inc()
 		return
@@ -837,11 +835,11 @@ func checkTunnel(ti *TunnelInstance) {
 	// поэтому соединение не переиспользуется и будет закрыто вместе с resp.Body.
 	_, bodyErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if bodyErr != nil {
-		log.Printf("[%s] Warning: failed to read response body: %v", ti.Name, bodyErr)
+		slog.Warn("failed to read response body", "tunnel", ti.Name, "error", bodyErr)
 	}
 
 	duration := time.Since(start)
-	log.Printf("[%s] ✓ Tunnel UP [%v]", ti.Name, duration.Round(time.Millisecond))
+	slog.Info("tunnel UP", "tunnel", ti.Name, "latency", duration.Round(time.Millisecond))
 	tunnelUp.With(labels).Set(1)
 	// Latency обновляем только при успешном чтении body,
 	// иначе замер duration может быть неточным.
@@ -941,7 +939,7 @@ func validateTunnels(config *Config) error {
 }
 
 // initializeTunnels creates and starts all tunnel instances from config
-func initializeTunnels(config *Config, debug bool, baseSocksPort int) ([]*TunnelInstance, error) {
+func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, error) {
 	if len(config.Tunnels) == 0 {
 		return nil, fmt.Errorf("no tunnels to initialize")
 	}
@@ -951,11 +949,9 @@ func initializeTunnels(config *Config, debug bool, baseSocksPort int) ([]*Tunnel
 	for i, tunnel := range config.Tunnels {
 		socksPort := baseSocksPort + i
 
-		if debug {
-			log.Printf("Initializing tunnel %d: %s (SOCKS port: %d)", i+1, tunnel.Name, socksPort)
-		}
+		slog.Debug("initializing tunnel", "index", i+1, "tunnel", tunnel.Name, "socks_port", socksPort)
 
-		ti, err := initTunnel(&tunnel, socksPort, debug)
+		ti, err := initTunnel(&tunnel, socksPort)
 		if err != nil {
 			// Cleanup already created instances
 			for _, instance := range tunnelInstances {
@@ -969,14 +965,17 @@ func initializeTunnels(config *Config, debug bool, baseSocksPort int) ([]*Tunnel
 
 		tunnelInstances = append(tunnelInstances, ti)
 
-		log.Printf("Started tunnel [%s] → %s [%s] on SOCKS port %d",
-			ti.Name, ti.MetricLabels.Server, ti.MetricLabels.Security, socksPort)
+		slog.Info("started tunnel",
+			"tunnel", ti.Name,
+			"server", ti.MetricLabels.Server,
+			"security", ti.MetricLabels.Security,
+			"socks_port", socksPort)
 	}
 
 	// Wait for all SOCKS ports to become ready
 	for _, ti := range tunnelInstances {
 		if err := waitForSOCKSPort(ti.SocksPort, socksStartupTimeout); err != nil {
-			log.Printf("[%s] Warning: SOCKS port %d not ready: %v", ti.Name, ti.SocksPort, err)
+			slog.Warn("SOCKS port not ready", "tunnel", ti.Name, "port", ti.SocksPort, "error", err)
 		}
 	}
 
@@ -1040,13 +1039,13 @@ func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 
 // reloadConfig gracefully reloads configuration using a "start new, then stop old" strategy
 // to avoid downtime: new tunnels are started on fresh ports before old ones are stopped.
-func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
-	log.Printf("Reloading configuration from %s", configFile)
+func (tm *TunnelManager) reloadConfig(configFile string) error {
+	slog.Info("reloading configuration", "config_file", configFile)
 
 	// Load new config
 	newConfig, err := loadConfig(configFile)
 	if err != nil {
-		log.Printf("Failed to load new config: %v", err)
+		slog.Error("failed to load new config", "error", err)
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
@@ -1055,13 +1054,13 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	newConfig.Tunnels = append(newConfig.Tunnels, subTunnels...)
 
 	if len(newConfig.Tunnels) == 0 {
-		log.Printf("No tunnels after resolving subscriptions, keeping current config")
+		slog.Error("no tunnels after resolving subscriptions, keeping current config")
 		return fmt.Errorf("no tunnels to initialize")
 	}
 
 	// Validate all tunnels before attempting to start new ones
 	if err := validateTunnels(newConfig); err != nil {
-		log.Printf("Config validation failed, keeping current tunnels: %v", err)
+		slog.Error("config validation failed, keeping current tunnels", "error", err)
 		return fmt.Errorf("config validation failed: %v", err)
 	}
 
@@ -1070,9 +1069,9 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	newBasePort := tm.nextSocksPort
 	tm.mu.RUnlock()
 
-	newInstances, err := initializeTunnels(newConfig, debug, newBasePort)
+	newInstances, err := initializeTunnels(newConfig, newBasePort)
 	if err != nil {
-		log.Printf("Failed to start new tunnels, keeping current: %v", err)
+		slog.Error("failed to start new tunnels, keeping current", "error", err)
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
 
@@ -1087,12 +1086,12 @@ func (tm *TunnelManager) reloadConfig(configFile string, debug bool) error {
 	stopTunnels(oldInstances)
 	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
 
-	log.Printf("Configuration reloaded successfully with %d tunnels", len(newInstances))
+	slog.Info("configuration reloaded successfully", "tunnel_count", len(newInstances))
 	return nil
 }
 
 // watchConfigFile watches for config file changes and triggers reload
-func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, debug bool) error {
+func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create file watcher: %v", err)
@@ -1126,20 +1125,18 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 
 		if _, err := os.Stat(absConfig); err != nil {
 			if !os.IsNotExist(err) {
-				log.Printf("Failed to stat config file %s: %v", absConfig, err)
+				slog.Error("failed to stat config file", "path", absConfig, "error", err)
 			}
 			return
 		}
 
 		if err := watcher.Add(absConfig); err != nil {
-			log.Printf("Failed to watch config file %s: %v", absConfig, err)
+			slog.Error("failed to watch config file", "path", absConfig, "error", err)
 			return
 		}
 
 		fileWatchActive = true
-		if debug {
-			log.Printf("Watching config file %s", absConfig)
-		}
+		slog.Debug("watching config file", "path", absConfig)
 	}
 
 	removeFileWatch := func() {
@@ -1150,8 +1147,8 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 			return
 		}
 
-		if err := watcher.Remove(absConfig); err != nil && debug {
-			log.Printf("Failed to remove config file watch %s: %v", absConfig, err)
+		if err := watcher.Remove(absConfig); err != nil {
+			slog.Error("failed to remove config file watch", "path", absConfig, "error", err)
 		}
 		fileWatchActive = false
 	}
@@ -1177,7 +1174,7 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 
 	addFileWatch()
 
-	log.Printf("Watching for config changes: %s", absConfig)
+	slog.Info("watching for config changes", "path", absConfig)
 
 	// Debounce timer to avoid multiple reloads
 	var debounceTimer *time.Timer
@@ -1202,9 +1199,7 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 			}
 
 			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
-				if debug {
-					log.Printf("Config file %s was removed or renamed", absConfig)
-				}
+				slog.Debug("config file removed or renamed", "path", absConfig)
 				removeFileWatch()
 				scheduleFileRewatch()
 				continue
@@ -1212,7 +1207,7 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 
 			// Check if it's a write or create event
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Chmod) {
-				log.Printf("Config file changed: %s", event.Name)
+				slog.Info("config file changed", "path", event.Name)
 
 				// Reset debounce timer
 				if debounceTimer != nil {
@@ -1220,8 +1215,8 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 				}
 
 				debounceTimer = time.AfterFunc(debounceDuration, func() {
-					if err := tm.reloadConfig(absConfig, debug); err != nil {
-						log.Printf("Failed to reload config: %v", err)
+					if err := tm.reloadConfig(absConfig); err != nil {
+						slog.Error("failed to reload config after file change", "error", err)
 					}
 				})
 			}
@@ -1230,12 +1225,12 @@ func watchConfigFile(ctx context.Context, tm *TunnelManager, configFile string, 
 			if !ok {
 				return nil
 			}
-			log.Printf("File watcher error: %v", err)
+			slog.Error("file watcher error", "error", err)
 		}
 	}
 }
 
-func watchSubscriptions(ctx context.Context, tm *TunnelManager, configFile string, debug bool) {
+func watchSubscriptions(ctx context.Context, tm *TunnelManager, configFile string) {
 	tm.mu.RLock()
 	config := tm.config
 	tm.mu.RUnlock()
@@ -1256,15 +1251,15 @@ func watchSubscriptions(ctx context.Context, tm *TunnelManager, configFile strin
 	ticker := time.NewTicker(minInterval)
 	defer ticker.Stop()
 
-	log.Printf("Subscription watcher started (interval: %v)", minInterval)
+	slog.Info("subscription watcher started", "interval", minInterval)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := tm.reloadConfig(configFile, debug); err != nil {
-				log.Printf("Subscription reload failed: %v", err)
+			if err := tm.reloadConfig(configFile); err != nil {
+				slog.Warn("subscription reload failed", "error", err)
 			}
 		}
 	}
@@ -1330,7 +1325,7 @@ func readLeaderElectionConfig() (*leaderElectionConfig, error) {
 
 // runProbing initializes tunnels, starts watchers, and blocks until ctx is canceled.
 // On return all tunnel instances are stopped and per-tunnel metrics are cleared.
-func runProbing(ctx context.Context, configFile string, debug bool) error {
+func runProbing(ctx context.Context, configFile string) error {
 	config, err := loadConfig(configFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
@@ -1343,13 +1338,11 @@ func runProbing(ctx context.Context, configFile string, debug bool) error {
 		return fmt.Errorf("no tunnels to initialize (including subscriptions)")
 	}
 
-	if debug {
-		log.Printf("Loaded config with %d tunnels", len(config.Tunnels))
-	}
+	slog.Debug("loaded config", "tunnel_count", len(config.Tunnels))
 
 	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
 
-	tunnelInstances, err := initializeTunnels(config, debug, defaultSocksPort)
+	tunnelInstances, err := initializeTunnels(config, defaultSocksPort)
 	if err != nil {
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
@@ -1364,17 +1357,17 @@ func runProbing(ctx context.Context, configFile string, debug bool) error {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := watchConfigFile(ctx, tunnelManager, configFile, debug); err != nil {
-			log.Printf("File watcher stopped: %v", err)
+		if err := watchConfigFile(ctx, tunnelManager, configFile); err != nil {
+			slog.Warn("file watcher stopped", "error", err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		watchSubscriptions(ctx, tunnelManager, configFile, debug)
+		watchSubscriptions(ctx, tunnelManager, configFile)
 	}()
 
-	log.Printf("Probing started for %d tunnels", len(tunnelInstances))
-	log.Printf("Config auto-reload enabled for: %s", configFile)
+	slog.Info("probing started", "tunnel_count", len(tunnelInstances))
+	slog.Info("config auto-reload enabled", "config_file", configFile)
 
 	<-ctx.Done()
 
@@ -1387,14 +1380,14 @@ func runProbing(ctx context.Context, configFile string, debug bool) error {
 	cleanupRemovedTunnelMetrics(finalInstances, nil)
 
 	wg.Wait()
-	log.Printf("Probing stopped")
+	slog.Info("probing stopped")
 	return nil
 }
 
 // runWithLeaderElection starts a k8s lease-based leader election and runs runProbing
 // only on the leader. Requires running inside a pod (uses InClusterConfig). Blocks
 // until ctx is canceled.
-func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, configFile string, debug bool) error {
+func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, configFile string) error {
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load in-cluster config (LEADER_ELECTION requires running inside a pod): %v", err)
@@ -1424,23 +1417,23 @@ func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, confi
 		RetryPeriod:     lec.RetryPeriod,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
-				log.Printf("Acquired leadership, starting probes")
+				slog.Info("acquired leadership, starting probes")
 				exporterLeader.Set(1)
-				if err := runProbing(leaderCtx, configFile, debug); err != nil {
-					log.Printf("Probing error while leader: %v", err)
+				if err := runProbing(leaderCtx, configFile); err != nil {
+					slog.Error("probing error while leader", "error", err)
 				}
 			},
 			OnStoppedLeading: func() {
 				// Per-tunnel metrics are cleared inside runProbing's deferred path;
 				// here we only flip the leader gauge so followers report leader=0.
-				log.Printf("Lost leadership, stopping probes")
+				slog.Info("lost leadership, stopping probes")
 				exporterLeader.Set(0)
 			},
 			OnNewLeader: func(identity string) {
 				if identity == lec.Identity {
 					return
 				}
-				log.Printf("New leader elected: %s", identity)
+				slog.Info("new leader elected", "identity", identity)
 			},
 		},
 	})
@@ -1448,13 +1441,54 @@ func runWithLeaderElection(ctx context.Context, lec *leaderElectionConfig, confi
 		return fmt.Errorf("failed to create leader elector: %v", err)
 	}
 
-	log.Printf("Leader election enabled: lease=%s/%s identity=%s", lec.Namespace, lec.Name, lec.Identity)
+	slog.Info("leader election enabled", "namespace", lec.Namespace, "name", lec.Name, "identity", lec.Identity)
 	elector.Run(ctx)
 	return nil
 }
 
+func setupLogger() {
+	levelStr := os.Getenv("LOG_LEVEL")
+
+	if os.Getenv("DEBUG") == "true" {
+		if levelStr != "" {
+			slog.Warn("DEBUG is deprecated, use LOG_LEVEL=debug instead; using LOG_LEVEL value", "log_level", levelStr)
+		} else {
+			levelStr = "debug"
+		}
+	}
+
+	if levelStr == "" {
+		levelStr = "info"
+	}
+
+	var level slog.Level
+	switch strings.ToLower(levelStr) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+
+	var handler slog.Handler
+	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "json") {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+
+	slog.SetDefault(slog.New(handler))
+}
+
 func main() {
-	log.Printf("xray-health-exporter %s", Version)
+	setupLogger()
+
+	slog.Info("xray-health-exporter starting", "version", Version)
 
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile == "" {
@@ -1466,11 +1500,10 @@ func main() {
 		listenAddr = defaultListenAddr
 	}
 
-	debug := os.Getenv("DEBUG") == "true"
-
 	lec, err := readLeaderElectionConfig()
 	if err != nil {
-		log.Fatalf("Invalid leader election config: %v", err)
+		slog.Error("invalid leader election config", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -1495,7 +1528,7 @@ func main() {
 		Handler: mux,
 	}
 
-	log.Printf("Metrics server listening on %s", listenAddr)
+	slog.Info("metrics server listening", "address", listenAddr)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -1506,37 +1539,37 @@ func main() {
 	go func() {
 		defer close(probingDone)
 		if lec != nil {
-			if err := runWithLeaderElection(ctx, lec, configFile, debug); err != nil {
-				log.Printf("Leader election stopped: %v", err)
+			if err := runWithLeaderElection(ctx, lec, configFile); err != nil {
+				slog.Info("leader election stopped", "error", err)
 			}
 			return
 		}
-		if err := runProbing(ctx, configFile, debug); err != nil {
-			log.Printf("Probing stopped: %v", err)
+		if err := runProbing(ctx, configFile); err != nil {
+			slog.Info("probing stopped", "error", err)
 		}
 	}()
 
 	select {
 	case err := <-serverErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP server error: %v", err)
+			slog.Error("HTTP server error", "error", err)
 		}
 	case <-ctx.Done():
 	case <-probingDone:
-		log.Printf("Probing exited unexpectedly, shutting down")
+		slog.Warn("probing exited unexpectedly, shutting down")
 	}
 
-	log.Printf("Shutdown signal received, stopping HTTP server")
+	slog.Info("shutdown signal received, stopping HTTP server")
 	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Printf("HTTP server shutdown error: %v", err)
+		slog.Error("HTTP server shutdown error", "error", err)
 	}
 
 	select {
 	case <-probingDone:
 	case <-time.After(15 * time.Second):
-		log.Printf("Probing did not stop within 15s, exiting anyway")
+		slog.Warn("probing did not stop within timeout, exiting anyway", "timeout", "15s")
 	}
 }

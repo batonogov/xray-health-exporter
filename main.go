@@ -899,8 +899,11 @@ func checkTunnel(ti *TunnelInstance) {
 func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
 	// Jitter на первую проверку — защита от thundering herd
 	jitter := time.Duration(rand.Int64N(int64(ti.CheckInterval)))
+	slog.Debug("staggering initial check", "tunnel", ti.Name, "jitter", jitter)
+	timer := time.NewTimer(jitter)
+	defer timer.Stop()
 	select {
-	case <-time.After(jitter):
+	case <-timer.C:
 	case <-ctx.Done():
 		return
 	}

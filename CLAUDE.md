@@ -56,7 +56,7 @@ CI требует покрытие ≥ 65%.
 
 ## Переменные окружения
 
-`CONFIG_FILE` (default `/app/config.yaml`), `LISTEN_ADDR` (`:9273`), `XRAY_LOG_LEVEL` (`warning`), `DEBUG` (`false`).
+`CONFIG_FILE` (default `/app/config.yaml`), `LISTEN_ADDR` (`:9273`), `LOG_FORMAT` (`text`), `LOG_LEVEL` (`info`), `XRAY_LOG_LEVEL` (`warning`), `DEBUG` (`false`, deprecated — use `LOG_LEVEL=debug`).
 
 ## Релизы
 

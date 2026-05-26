@@ -673,7 +673,7 @@ tunnels:
 
 	go func() {
 		defer close(done)
-		if err := watchConfigFile(ctx, tm, configFile, false); err != nil {
+		if err := watchConfigFile(ctx, tm, configFile); err != nil {
 			watcherErr <- err
 		}
 	}()
@@ -850,7 +850,7 @@ func TestInitializeTunnels(t *testing.T) {
 			Tunnels: []Tunnel{},
 		}
 
-		instances, err := initializeTunnels(config, false, defaultSocksPort)
+		instances, err := initializeTunnels(config, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for empty tunnels")
 		}
@@ -873,7 +873,7 @@ func TestInitializeTunnels(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, false, defaultSocksPort)
+		instances, err := initializeTunnels(config, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for invalid URL")
 		}
@@ -2016,7 +2016,7 @@ func TestInitTunnel_InvalidDurations(t *testing.T) {
 			CheckTimeout:  "10s",
 		}
 
-		_, err := initTunnel(tunnel, 1080, false)
+		_, err := initTunnel(tunnel, 1080)
 		if err == nil {
 			t.Error("expected error for invalid check_interval")
 		}
@@ -2034,7 +2034,7 @@ func TestInitTunnel_InvalidDurations(t *testing.T) {
 			CheckTimeout:  "not-a-duration",
 		}
 
-		_, err := initTunnel(tunnel, 1080, false)
+		_, err := initTunnel(tunnel, 1080)
 		if err == nil {
 			t.Error("expected error for invalid check_timeout")
 		}
@@ -2101,7 +2101,7 @@ tunnels:
 
 	go func() {
 		defer close(done)
-		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+		if err := watchConfigFile(ctx, tm, configFile); err != nil {
 			watcherErr <- err
 		}
 	}()
@@ -2155,7 +2155,7 @@ tunnels:
 
 	go func() {
 		defer close(done)
-		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+		if err := watchConfigFile(ctx, tm, configFile); err != nil {
 			watcherErr <- err
 		}
 	}()
@@ -2514,7 +2514,7 @@ func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
 	}
 
 	// Reload should fail validation and keep old tunnels
-	err := tm.reloadConfig(configFile, false)
+	err := tm.reloadConfig(configFile)
 	if err == nil {
 		t.Fatal("expected error for invalid config")
 	}
@@ -2557,7 +2557,7 @@ tunnels:
 
 	go func() {
 		defer close(done)
-		if err := watchConfigFile(ctx, tm, configFile, true); err != nil {
+		if err := watchConfigFile(ctx, tm, configFile); err != nil {
 			watcherErr <- err
 		}
 	}()
@@ -2669,7 +2669,7 @@ func TestInitTunnel_XrayConfigFile(t *testing.T) {
 		CheckTimeout:   "10s",
 	}
 
-	ti, err := initTunnel(tunnel, 11080, false)
+	ti, err := initTunnel(tunnel, 11080)
 	if err != nil {
 		t.Fatalf("initTunnel() error = %v", err)
 	}
@@ -2994,7 +2994,7 @@ func TestWatchSubscriptions_NoSubscriptions(t *testing.T) {
 	// Should return immediately since there are no subscriptions
 	done := make(chan struct{})
 	go func() {
-		watchSubscriptions(ctx, tm, "/nonexistent", false)
+		watchSubscriptions(ctx, tm, "/nonexistent")
 		close(done)
 	}()
 
@@ -3014,7 +3014,7 @@ func TestWatchSubscriptions_NilConfig(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchSubscriptions(ctx, tm, "/nonexistent", false)
+		watchSubscriptions(ctx, tm, "/nonexistent")
 		close(done)
 	}()
 
@@ -3221,7 +3221,7 @@ func TestInitTunnel_XrayConfigFile_AutoName(t *testing.T) {
 		CheckTimeout:   "10s",
 	}
 
-	ti, err := initTunnel(tunnel, 11090, false)
+	ti, err := initTunnel(tunnel, 11090)
 	if err != nil {
 		t.Fatalf("initTunnel() error = %v", err)
 	}
@@ -3247,7 +3247,7 @@ func TestInitTunnel_XrayConfigFile_FallbackName(t *testing.T) {
 		CheckTimeout:   "10s",
 	}
 
-	ti, err := initTunnel(tunnel, 11091, false)
+	ti, err := initTunnel(tunnel, 11091)
 	if err != nil {
 		t.Fatalf("initTunnel() error = %v", err)
 	}

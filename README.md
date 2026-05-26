@@ -173,8 +173,10 @@ tunnels:
 |----------|---------|-------------|
 | `CONFIG_FILE` | `/app/config.yaml` | Path to YAML configuration |
 | `LISTEN_ADDR` | `:9273` | HTTP server address |
+| `LOG_FORMAT` | `text` | Log format: `text` or `json` |
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `XRAY_LOG_LEVEL` | `warning` | Xray log level |
-| `DEBUG` | `false` | Verbose output |
+| `DEBUG` | `false` | (Deprecated) Verbose output, use `LOG_LEVEL=debug` instead |
 | `LEADER_ELECTION` | `false` | Enable k8s leader election (see below) |
 | `LEADER_ELECTION_NAMESPACE` | pod namespace | Namespace for the Lease object |
 | `LEADER_ELECTION_NAME` | `xray-health-exporter` | Lease name |

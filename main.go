@@ -423,7 +423,6 @@ func createXrayConfig(vlessConfig *VLESSConfig, socksPort int) ([]byte, error) {
 								{
 									"id":         vlessConfig.UUID,
 									"encryption": "none",
-									"flow":       "",
 								},
 							},
 						},
@@ -458,6 +457,10 @@ func createStreamSettings(vlessConfig *VLESSConfig) map[string]interface{} {
 		}
 		if vlessConfig.Authority != "" {
 			grpcSettings["authority"] = vlessConfig.Authority
+		} else if vlessConfig.SNI != "" {
+			grpcSettings["authority"] = vlessConfig.SNI
+		} else if vlessConfig.Address != "" {
+			grpcSettings["authority"] = vlessConfig.Address
 		}
 		if vlessConfig.MultiMode {
 			grpcSettings["multiMode"] = true

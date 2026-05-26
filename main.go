@@ -136,16 +136,19 @@ type Tunnel struct {
 }
 
 type VLESSConfig struct {
-	UUID     string
-	Address  string
-	Port     int
-	Security string
-	PBK      string
-	SNI      string
-	FP       string
-	SID      string
-	SPX      string
-	Type     string
+	UUID        string
+	Address     string
+	Port        int
+	Security    string
+	PBK         string
+	SNI         string
+	FP          string
+	SID         string
+	SPX         string
+	Type        string
+	ServiceName string
+	Authority   string
+	MultiMode   bool
 }
 
 // MetricLabels holds protocol-agnostic labels for Prometheus metrics.
@@ -372,6 +375,9 @@ func parseVLESSURL(vlessURL string) (*VLESSConfig, error) {
 	config.FP = query.Get("fp")
 	config.SID = query.Get("sid")
 	config.SPX = query.Get("spx")
+	config.ServiceName = query.Get("serviceName")
+	config.Authority = query.Get("authority")
+	config.MultiMode = query.Get("multiMode") == "true"
 
 	return config, nil
 }
@@ -435,6 +441,20 @@ func createStreamSettings(vlessConfig *VLESSConfig) map[string]interface{} {
 				"type": "none",
 			},
 		}
+	}
+
+	// Add grpcSettings for gRPC transport
+	if vlessConfig.Type == "grpc" {
+		grpcSettings := map[string]interface{}{
+			"serviceName": vlessConfig.ServiceName,
+		}
+		if vlessConfig.Authority != "" {
+			grpcSettings["authority"] = vlessConfig.Authority
+		}
+		if vlessConfig.MultiMode {
+			grpcSettings["multiMode"] = true
+		}
+		streamSettings["grpcSettings"] = grpcSettings
 	}
 
 	if vlessConfig.Security == "reality" {

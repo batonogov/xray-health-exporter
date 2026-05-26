@@ -73,6 +73,25 @@ func TestParseVLESSURL(t *testing.T) {
 			url:     "",
 			wantErr: true,
 		},
+		{
+			name: "valid vless url with grpc transport",
+			url:  "vless://uuid-789@grpc.example.com:443/?type=grpc&serviceName=grpc-service&authority=grpc-host&multiMode=true&security=reality&pbk=test-pbk&fp=chrome&sni=grpc.example.com&sid=ab12cd34",
+			want: &VLESSConfig{
+				UUID:        "uuid-789",
+				Address:     "grpc.example.com",
+				Port:        443,
+				Type:        "grpc",
+				ServiceName: "grpc-service",
+				Authority:   "grpc-host",
+				MultiMode:   true,
+				Security:    "reality",
+				PBK:         "test-pbk",
+				SNI:         "grpc.example.com",
+				FP:          "chrome",
+				SID:         "ab12cd34",
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -97,6 +116,15 @@ func TestParseVLESSURL(t *testing.T) {
 				}
 				if got.Type != tt.want.Type {
 					t.Errorf("Type = %v, want %v", got.Type, tt.want.Type)
+				}
+				if got.ServiceName != tt.want.ServiceName {
+					t.Errorf("ServiceName = %v, want %v", got.ServiceName, tt.want.ServiceName)
+				}
+				if got.Authority != tt.want.Authority {
+					t.Errorf("Authority = %v, want %v", got.Authority, tt.want.Authority)
+				}
+				if got.MultiMode != tt.want.MultiMode {
+					t.Errorf("MultiMode = %v, want %v", got.MultiMode, tt.want.MultiMode)
 				}
 			}
 		})
@@ -157,6 +185,69 @@ func TestCreateStreamSettings(t *testing.T) {
 				}
 				if tls["serverName"] != "example.com" {
 					t.Errorf("serverName = %v, want example.com", tls["serverName"])
+				}
+			},
+		},
+		{
+			name: "grpc settings with reality",
+			config: &VLESSConfig{
+				Type:        "grpc",
+				Security:    "reality",
+				ServiceName: "grpc-service",
+				Authority:   "grpc-host",
+				MultiMode:   true,
+				PBK:         "test-key",
+				SNI:         "grpc.example.com",
+				FP:          "chrome",
+				SID:         "ab12cd34",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				if settings["network"] != "grpc" {
+					t.Errorf("network = %v, want grpc", settings["network"])
+				}
+				if settings["security"] != "reality" {
+					t.Errorf("security = %v, want reality", settings["security"])
+				}
+				grpc, ok := settings["grpcSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("grpcSettings not found")
+				}
+				if grpc["serviceName"] != "grpc-service" {
+					t.Errorf("serviceName = %v, want grpc-service", grpc["serviceName"])
+				}
+				if grpc["authority"] != "grpc-host" {
+					t.Errorf("authority = %v, want grpc-host", grpc["authority"])
+				}
+				if grpc["multiMode"] != true {
+					t.Errorf("multiMode = %v, want true", grpc["multiMode"])
+				}
+			},
+		},
+		{
+			name: "grpc settings minimal",
+			config: &VLESSConfig{
+				Type:        "grpc",
+				Security:    "tls",
+				ServiceName: "minimal-service",
+				SNI:         "minimal.example.com",
+				FP:          "chrome",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				if settings["network"] != "grpc" {
+					t.Errorf("network = %v, want grpc", settings["network"])
+				}
+				grpc, ok := settings["grpcSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("grpcSettings not found")
+				}
+				if grpc["serviceName"] != "minimal-service" {
+					t.Errorf("serviceName = %v, want minimal-service", grpc["serviceName"])
+				}
+				if _, exists := grpc["authority"]; exists {
+					t.Error("authority should not be set when empty")
+				}
+				if _, exists := grpc["multiMode"]; exists {
+					t.Error("multiMode should not be set when false")
 				}
 			},
 		},

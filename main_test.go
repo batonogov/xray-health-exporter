@@ -409,6 +409,9 @@ func TestCreateXrayConfig(t *testing.T) {
 	if users["id"] != "test-uuid" {
 		t.Errorf("user id = %v, want test-uuid", users["id"])
 	}
+	if _, exists := users["flow"]; exists {
+		t.Error("flow should not be set in user config")
+	}
 }
 
 func TestCreateXrayConfig_gRPC(t *testing.T) {

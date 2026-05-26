@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/batonogov/xray-health-exporter/compare/v1.3.0...v1.4.0) (2026-05-26)
+
+
+### Features
+
+* staggered initial checks to prevent thundering herd ([#95](https://github.com/batonogov/xray-health-exporter/issues/95)) ([de20435](https://github.com/batonogov/xray-health-exporter/commit/de20435e1f5e8e4c718ff651de67340df964650a))
+
+
+### Bug Fixes
+
+* gRPC+Reality connection reset by setting authority fallback ([#93](https://github.com/batonogov/xray-health-exporter/issues/93)) ([0d60660](https://github.com/batonogov/xray-health-exporter/commit/0d606607ed2112a9b2a69736c7e3e96eca97ce08))
+
 ## [1.3.0](https://github.com/batonogov/xray-health-exporter/compare/v1.2.3...v1.3.0) (2026-05-26)
 
 

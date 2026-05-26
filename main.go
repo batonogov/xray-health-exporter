@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -896,11 +897,21 @@ func checkTunnel(ti *TunnelInstance) {
 }
 
 func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
+	// Jitter на первую проверку — защита от thundering herd
+	jitter := time.Duration(rand.Int64N(int64(ti.CheckInterval)))
+	slog.Debug("staggering initial check", "tunnel", ti.Name, "jitter", jitter)
+	timer := time.NewTimer(jitter)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return
+	}
+
+	checkTunnel(ti)
+
 	ticker := time.NewTicker(ti.CheckInterval)
 	defer ticker.Stop()
-
-	// Первая проверка сразу
-	checkTunnel(ti)
 
 	for {
 		select {

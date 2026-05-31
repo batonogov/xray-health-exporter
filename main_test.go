@@ -1271,7 +1271,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Errorf("expected status OK, got %v", resp.StatusCode)
 	}
 
-	body := make([]byte, 10000)
+	body := make([]byte, 20000)
 	n, _ := resp.Body.Read(body)
 	bodyStr := string(body[:n])
 

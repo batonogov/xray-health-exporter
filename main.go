@@ -68,6 +68,15 @@ var (
 		[]string{"name", "server", "security", "sni"},
 	)
 
+	tunnelLatencyHistogram = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "xray_tunnel_latency_histogram_seconds",
+			Help:    "Latency of the tunnel check in seconds (histogram for percentile queries via histogram_quantile)",
+			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{"name", "server", "security", "sni"},
+	)
+
 	tunnelCheckTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "xray_tunnel_check_total",
@@ -103,6 +112,7 @@ var (
 func init() {
 	prometheus.MustRegister(tunnelUp)
 	prometheus.MustRegister(tunnelLatency)
+	prometheus.MustRegister(tunnelLatencyHistogram)
 	prometheus.MustRegister(tunnelCheckTotal)
 	prometheus.MustRegister(tunnelLastSuccess)
 	prometheus.MustRegister(tunnelHTTPStatus)
@@ -891,6 +901,7 @@ func checkTunnel(ti *TunnelInstance) {
 	// иначе замер duration может быть неточным.
 	if bodyErr == nil {
 		tunnelLatency.With(labels).Set(duration.Seconds())
+		tunnelLatencyHistogram.With(labels).Observe(duration.Seconds())
 	}
 	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
 	tunnelCheckTotal.With(resultLabels("success")).Inc()
@@ -1086,6 +1097,7 @@ func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 		labels := tunnelMetricLabels(ti)
 		tunnelUp.DeleteLabelValues(labels...)
 		tunnelLatency.DeleteLabelValues(labels...)
+		tunnelLatencyHistogram.DeleteLabelValues(labels...)
 		tunnelLastSuccess.DeleteLabelValues(labels...)
 		tunnelHTTPStatus.DeleteLabelValues(labels...)
 		tunnelCheckTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], "success")

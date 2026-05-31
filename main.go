@@ -195,6 +195,7 @@ type Tunnel struct {
 	CheckURL       string `yaml:"check_url"`
 	CheckInterval  string `yaml:"check_interval"`
 	CheckTimeout   string `yaml:"check_timeout"`
+	SocksPort      int    `yaml:"socks_port"`
 }
 
 type VLESSConfig struct {
@@ -1048,9 +1049,19 @@ func (t *Tunnel) Validate() error {
 // This allows catching errors before stopping existing tunnels during reload.
 func validateTunnels(config *Config) error {
 	var errs []error
+	seenPorts := make(map[int]string)
 	for i, tunnel := range config.Tunnels {
 		if err := tunnel.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("tunnel %d (%s): %w", i+1, tunnel.Name, err))
+		}
+		if tunnel.SocksPort != 0 {
+			if tunnel.SocksPort < 1 || tunnel.SocksPort > 65535 {
+				errs = append(errs, fmt.Errorf("tunnel %d (%s): socks_port %d is out of valid range [1-65535]", i+1, tunnel.Name, tunnel.SocksPort))
+			} else if existing, ok := seenPorts[tunnel.SocksPort]; ok {
+				errs = append(errs, fmt.Errorf("tunnel %d (%s): socks_port %d is already used by tunnel %q", i+1, tunnel.Name, tunnel.SocksPort, existing))
+			} else {
+				seenPorts[tunnel.SocksPort] = tunnel.Name
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -1063,9 +1074,16 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 	}
 
 	var tunnelInstances []*TunnelInstance
+	nextAutoPort := baseSocksPort
 
 	for i, tunnel := range config.Tunnels {
-		socksPort := baseSocksPort + i
+		var socksPort int
+		if tunnel.SocksPort > 0 {
+			socksPort = tunnel.SocksPort
+		} else {
+			socksPort = nextAutoPort
+			nextAutoPort++
+		}
 
 		slog.Debug("initializing tunnel", "index", i+1, "tunnel", tunnel.Name, "socks_port", socksPort)
 
@@ -1204,7 +1222,14 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	tm.mu.Lock()
 	oldInstances := tm.instances
 	tm.instances = newInstances
-	tm.nextSocksPort = newBasePort + len(newInstances)
+	// Advance nextSocksPort: only count auto-assigned ports (SocksPort == 0 in config).
+	autoCount := 0
+	for _, t := range newConfig.Tunnels {
+		if t.SocksPort == 0 {
+			autoCount++
+		}
+	}
+	tm.nextSocksPort = newBasePort + autoCount
 	tm.config = newConfig
 	tm.mu.Unlock()
 
@@ -1476,7 +1501,13 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
-	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
+	autoCount := 0
+	for _, t := range config.Tunnels {
+		if t.SocksPort == 0 {
+			autoCount++
+		}
+	}
+	tunnelManager.nextSocksPort = defaultSocksPort + autoCount
 	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 

@@ -65,7 +65,7 @@ jobs:
           echo "📊 Общее покрытие: $COVERAGE%"
 
           # Проверка минимального порога
-          THRESHOLD=65
+          THRESHOLD=75
           if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
             echo "❌ Покрытие ($COVERAGE%) ниже минимального порога ($THRESHOLD%)"
             exit 1
@@ -80,7 +80,7 @@ jobs:
           echo "### ✅ Результаты тестов" >> coverage_report.md
           echo "" >> coverage_report.md
           echo "- **Общее покрытие:** ${{ steps.coverage.outputs.coverage }}%" >> coverage_report.md
-          echo "- **Минимальный порог:** 65%" >> coverage_report.md
+          echo "- **Минимальный порог:** 75%" >> coverage_report.md
           echo "- **Статус:** 🟢 Пройдено" >> coverage_report.md
           echo "" >> coverage_report.md
           echo "### 📋 Покрытие по функциям" >> coverage_report.md

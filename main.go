@@ -820,6 +820,19 @@ func (d *socks5Dialer) DialContext(ctx context.Context, network, addr string) (n
 	return conn, nil
 }
 
+// errorReasons lists all known error reason categories used in xray_tunnel_error_total.
+// Keep this slice in sync with the categories returned by classifyError.
+var errorReasons = []string{
+	"timeout",
+	"dns",
+	"tls",
+	"connection_refused",
+	"connection_reset",
+	"bad_status",
+	"socks_error",
+	"unknown",
+}
+
 // classifyError determines the category of an error for the xray_tunnel_error_total metric.
 func classifyError(err error) string {
 	if err == nil {
@@ -832,10 +845,12 @@ func classifyError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return "timeout"
 	}
-	if strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "context deadline") {
+	if strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "context deadline") ||
+		strings.Contains(msg, "i/o timeout") {
 		return "timeout"
 	}
 	if strings.Contains(msg, "Client.Timeout") || strings.Contains(msg, "request canceled") {
@@ -859,6 +874,11 @@ func classifyError(err error) string {
 	// Connection refused
 	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "Connection refused") {
 		return "connection_refused"
+	}
+
+	// Connection reset
+	if strings.Contains(msg, "connection reset by peer") || strings.Contains(msg, "broken pipe") {
+		return "connection_reset"
 	}
 
 	// SOCKS5 proxy errors
@@ -1164,7 +1184,7 @@ func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 		tunnelCheckTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], "failure")
 
 		// Delete error metrics for all known reason categories
-		for _, reason := range []string{"timeout", "dns", "tls", "connection_refused", "bad_status", "socks_error", "unknown"} {
+		for _, reason := range errorReasons {
 			tunnelErrorTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], reason)
 		}
 	}

@@ -1083,6 +1083,86 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 	}
 }
 
+func TestCleanupRemovedTunnelMetrics_ErrorMetrics(t *testing.T) {
+	resetAllMetrics := func() {
+		tunnelUp.Reset()
+		tunnelLatency.Reset()
+		tunnelLastSuccess.Reset()
+		tunnelHTTPStatus.Reset()
+		tunnelCheckTotal.Reset()
+		tunnelErrorTotal.Reset()
+	}
+
+	resetAllMetrics()
+	defer resetAllMetrics()
+
+	removed := &TunnelInstance{
+		Name: "err-removed",
+		MetricLabels: MetricLabels{
+			Server:   "err.example.com:1443",
+			Security: "tls",
+			SNI:      "err.example.com",
+		},
+	}
+
+	kept := &TunnelInstance{
+		Name: "err-kept",
+		MetricLabels: MetricLabels{
+			Server:   "kept.example.com:2443",
+			Security: "tls",
+			SNI:      "kept.example.com",
+		},
+	}
+
+	// Populate error metrics for both tunnels
+	for _, ti := range []*TunnelInstance{removed, kept} {
+		labels := prometheus.Labels{
+			"name":     ti.Name,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
+		}
+		for _, reason := range errorReasons {
+			errorLabels := prometheus.Labels{
+				"name":     labels["name"],
+				"server":   labels["server"],
+				"security": labels["security"],
+				"sni":      labels["sni"],
+				"reason":   reason,
+			}
+			tunnelErrorTotal.With(errorLabels).Add(1)
+		}
+	}
+
+	cleanupRemovedTunnelMetrics([]*TunnelInstance{removed, kept}, []*TunnelInstance{kept})
+
+	// Error metrics for removed tunnel should be gone
+	for _, reason := range errorReasons {
+		if metricExistsWithLabels(t, "xray_tunnel_error_total", prometheus.Labels{
+			"name":     "err-removed",
+			"server":   "err.example.com:1443",
+			"security": "tls",
+			"sni":      "err.example.com",
+			"reason":   reason,
+		}) {
+			t.Errorf("expected error metric (reason=%s) for removed tunnel to be deleted", reason)
+		}
+	}
+
+	// Error metrics for kept tunnel should remain
+	for _, reason := range errorReasons {
+		if !metricExistsWithLabels(t, "xray_tunnel_error_total", prometheus.Labels{
+			"name":     "err-kept",
+			"server":   "kept.example.com:2443",
+			"security": "tls",
+			"sni":      "kept.example.com",
+			"reason":   reason,
+		}) {
+			t.Errorf("expected error metric (reason=%s) for kept tunnel to remain", reason)
+		}
+	}
+}
+
 func TestInitializeTunnels(t *testing.T) {
 	// Тест с пустым конфигом
 	t.Run("empty config", func(t *testing.T) {
@@ -1422,6 +1502,10 @@ func TestClassifyError(t *testing.T) {
 		{"connection refused", fmt.Errorf("dial tcp 127.0.0.1:9999: connection refused"), "connection_refused"},
 		{"Connection refused capitalized", fmt.Errorf("Connection refused"), "connection_refused"},
 
+		// connection_reset
+		{"connection reset by peer", fmt.Errorf("read tcp 10.0.0.1:12345->10.0.0.2:443: connection reset by peer"), "connection_reset"},
+		{"broken pipe", fmt.Errorf("write tcp 10.0.0.1:12345->10.0.0.2:443: broken pipe"), "connection_reset"},
+
 		// socks_error
 		{"SOCKS5 handshake failed", fmt.Errorf("SOCKS5 handshake failed"), "socks_error"},
 		{"SOCKS5 connect failed", fmt.Errorf("SOCKS5 connect failed: 5"), "socks_error"},
@@ -1432,7 +1516,7 @@ func TestClassifyError(t *testing.T) {
 		{"generic error", fmt.Errorf("some random error"), "unknown"},
 		{"empty error", fmt.Errorf(""), "unknown"},
 		{"EOF", fmt.Errorf("unexpected EOF"), "unknown"},
-		{"network timeout wrapped", fmt.Errorf("read tcp: i/o timeout"), "unknown"},
+		{"i/o timeout", fmt.Errorf("read tcp: i/o timeout"), "timeout"},
 	}
 
 	for _, tt := range tests {
@@ -1452,7 +1536,7 @@ func TestClassifyError_NetError(t *testing.T) {
 		reason string
 	}{
 		{"net.OpError with timeout", &netOpError{msg: "read tcp timeout", timeout: true}, "timeout"},
-		{"net.OpError without timeout", &netOpError{msg: "read tcp: connection reset by peer", timeout: false}, "unknown"},
+		{"net.OpError without timeout", &netOpError{msg: "read tcp: connection reset by peer", timeout: false}, "connection_reset"},
 	}
 
 	for _, tt := range tests {

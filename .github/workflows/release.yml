@@ -57,7 +57,7 @@ jobs:
           GOARM: ${{ matrix.goarch == 'arm' && '7' || '' }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w -X main.Version=${{ needs.version.outputs.version }}" \
+          go build -ldflags="-s -w -X main.Version=${{ needs.version.outputs.version }} -X main.Commit=${{ github.sha }}" \
             -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       - name: Загрузка артефакта

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,9 @@ const (
 
 // Version is set at build time via -ldflags="-X main.Version=..."
 var Version = "dev"
+
+// Commit is set at build time via -ldflags="-X main.Commit=..."
+var Commit = ""
 
 var (
 	tunnelUp = prometheus.NewGaugeVec(
@@ -107,6 +111,48 @@ var (
 			Help: "1 if this exporter instance is actively probing tunnels (leader, or leader election disabled), 0 otherwise",
 		},
 	)
+
+	exporterConfigReloadTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "xray_exporter_config_reload_total",
+			Help: "Total number of configuration reload attempts",
+		},
+	)
+
+	exporterConfigReloadErrorsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "xray_exporter_config_reload_errors_total",
+			Help: "Total number of configuration reload errors",
+		},
+	)
+
+	exporterTunnelsConfigured = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "xray_exporter_tunnels_configured",
+			Help: "Current number of configured tunnels",
+		},
+	)
+
+	exporterUptimeSeconds = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "xray_exporter_uptime_seconds",
+			Help: "Time since the exporter process started, in seconds",
+		},
+		func() float64 {
+			return time.Since(exporterStartTime).Seconds()
+		},
+	)
+
+	exporterBuildInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "xray_exporter_build_info",
+			Help: "Build information with version, go_version, and commit labels. Value is always 1.",
+		},
+		[]string{"version", "go_version", "commit"},
+	)
+
+	// exporterStartTime records when the process started; set once in main.
+	exporterStartTime = time.Now()
 )
 
 func init() {
@@ -117,6 +163,11 @@ func init() {
 	prometheus.MustRegister(tunnelLastSuccess)
 	prometheus.MustRegister(tunnelHTTPStatus)
 	prometheus.MustRegister(exporterLeader)
+	prometheus.MustRegister(exporterConfigReloadTotal)
+	prometheus.MustRegister(exporterConfigReloadErrorsTotal)
+	prometheus.MustRegister(exporterTunnelsConfigured)
+	prometheus.MustRegister(exporterUptimeSeconds)
+	prometheus.MustRegister(exporterBuildInfo)
 }
 
 // Config structures
@@ -1110,10 +1161,13 @@ func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 func (tm *TunnelManager) reloadConfig(configFile string) error {
 	slog.Info("reloading configuration", "config_file", configFile)
 
+	exporterConfigReloadTotal.Inc()
+
 	// Load new config
 	newConfig, err := loadConfig(configFile)
 	if err != nil {
 		slog.Error("failed to load new config", "error", err)
+		exporterConfigReloadErrorsTotal.Inc()
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
@@ -1123,12 +1177,14 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 
 	if len(newConfig.Tunnels) == 0 {
 		slog.Error("no tunnels after resolving subscriptions, keeping current config")
+		exporterConfigReloadErrorsTotal.Inc()
 		return fmt.Errorf("no tunnels to initialize")
 	}
 
 	// Validate all tunnels before attempting to start new ones
 	if err := validateTunnels(newConfig); err != nil {
 		slog.Error("config validation failed, keeping current tunnels", "error", err)
+		exporterConfigReloadErrorsTotal.Inc()
 		return fmt.Errorf("config validation failed: %v", err)
 	}
 
@@ -1140,6 +1196,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	newInstances, err := initializeTunnels(newConfig, newBasePort)
 	if err != nil {
 		slog.Error("failed to start new tunnels, keeping current", "error", err)
+		exporterConfigReloadErrorsTotal.Inc()
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
 
@@ -1153,6 +1210,8 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 
 	stopTunnels(oldInstances)
 	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
+
+	exporterTunnelsConfigured.Set(float64(len(newInstances)))
 
 	slog.Info("configuration reloaded successfully", "tunnel_count", len(newInstances))
 	return nil
@@ -1421,6 +1480,8 @@ func runProbing(ctx context.Context, configFile string) error {
 	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 
+	exporterTunnelsConfigured.Set(float64(len(tunnelInstances)))
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -1446,6 +1507,7 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	stopTunnels(finalInstances)
 	cleanupRemovedTunnelMetrics(finalInstances, nil)
+	exporterTunnelsConfigured.Set(0)
 
 	wg.Wait()
 	slog.Info("probing stopped")
@@ -1556,6 +1618,9 @@ func setupLogger() {
 
 func main() {
 	setupLogger()
+
+	exporterStartTime = time.Now()
+	exporterBuildInfo.WithLabelValues(Version, runtime.Version(), Commit).Set(1)
 
 	slog.Info("xray-health-exporter starting", "version", Version)
 

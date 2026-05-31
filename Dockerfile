@@ -11,7 +11,8 @@ COPY . .
 
 # Сборка
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.Version=${VERSION}" -o xray-health-exporter .
+ARG COMMIT=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT}" -o xray-health-exporter .
 
 # Финальная стадия
 FROM alpine:3.23.4

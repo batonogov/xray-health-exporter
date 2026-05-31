@@ -970,6 +970,7 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 	resetAllMetrics := func() {
 		tunnelUp.Reset()
 		tunnelLatency.Reset()
+		tunnelLatencyHistogram.Reset()
 		tunnelLastSuccess.Reset()
 		tunnelHTTPStatus.Reset()
 		tunnelCheckTotal.Reset()
@@ -1014,6 +1015,7 @@ func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 		}
 		tunnelUp.With(labelVals).Set(1)
 		tunnelLatency.With(labelVals).Set(0.2)
+		tunnelLatencyHistogram.With(labelVals).Observe(0.2)
 		tunnelLastSuccess.With(labelVals).Set(float64(time.Now().Unix()))
 		tunnelHTTPStatus.With(labelVals).Set(200)
 
@@ -3663,5 +3665,143 @@ func TestReadLeaderElectionConfig(t *testing.T) {
 				t.Errorf("RenewDeadline (%v) must be greater than RetryPeriod (%v)", got.RenewDeadline, got.RetryPeriod)
 			}
 		})
+	}
+}
+
+func TestLatencyHistogramMetric(t *testing.T) {
+	resetMetrics := func() {
+		tunnelLatency.Reset()
+		tunnelLatencyHistogram.Reset()
+	}
+	resetMetrics()
+	defer resetMetrics()
+
+	labels := prometheus.Labels{
+		"name":     "histogram-test",
+		"server":   "histogram.example.com:443",
+		"security": "tls",
+		"sni":      "histogram.example.com",
+	}
+
+	for _, v := range []float64{0.05, 0.1, 0.15, 0.2, 0.3, 0.5} {
+		tunnelLatencyHistogram.With(labels).Observe(v)
+	}
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "xray_tunnel_latency_histogram_seconds" {
+			found = true
+			for _, m := range mf.GetMetric() {
+				if metricLabelsMatch(m, labels) {
+					h := m.GetHistogram()
+					if h.GetSampleCount() != 6 {
+						t.Errorf("expected 6 samples, got %d", h.GetSampleCount())
+					}
+					if h.GetSampleSum() < 1.29 || h.GetSampleSum() > 1.31 {
+						t.Errorf("expected sum ~1.3, got %f", h.GetSampleSum())
+					}
+					if len(h.GetBucket()) == 0 {
+						t.Error("expected non-empty buckets")
+					}
+				}
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("xray_tunnel_latency_histogram_seconds metric not found")
+	}
+}
+
+func TestLatencyHistogramBuckets(t *testing.T) {
+	resetMetrics := func() {
+		tunnelLatency.Reset()
+		tunnelLatencyHistogram.Reset()
+	}
+	resetMetrics()
+	defer resetMetrics()
+
+	labels := prometheus.Labels{
+		"name":     "bucket-test",
+		"server":   "bucket.example.com:443",
+		"security": "tls",
+		"sni":      "bucket.example.com",
+	}
+
+	tunnelLatencyHistogram.With(labels).Observe(0.07)
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	for _, mf := range mfs {
+		if mf.GetName() != "xray_tunnel_latency_histogram_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if !metricLabelsMatch(m, labels) {
+				continue
+			}
+			h := m.GetHistogram()
+			bounds := []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+			if len(h.GetBucket()) != len(bounds) {
+				t.Errorf("expected %d buckets, got %d", len(bounds), len(h.GetBucket()))
+			}
+			for i, b := range h.GetBucket() {
+				switch {
+				case i < 3:
+					if b.GetCumulativeCount() != 0 {
+						t.Errorf("bucket[%d] (le=%v) expected 0, got %d", i, bounds[i], b.GetCumulativeCount())
+					}
+				default:
+					if b.GetCumulativeCount() != 1 {
+						t.Errorf("bucket[%d] (le=%v) expected 1, got %d", i, bounds[i], b.GetCumulativeCount())
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestMetricsEndpoint_IncludesHistogram(t *testing.T) {
+	labels := prometheus.Labels{
+		"name":     "endpoint-hist-test",
+		"server":   "endpoint.example.com:443",
+		"security": "reality",
+		"sni":      "google.com",
+	}
+
+	tunnelLatency.With(labels).Set(0.123)
+	tunnelLatencyHistogram.With(labels).Observe(0.123)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	promhttp.Handler().ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	body := make([]byte, 20000)
+	n, _ := resp.Body.Read(body)
+	bodyStr := string(body[:n])
+
+	expectedMetrics := []string{
+		"xray_tunnel_latency_seconds",
+		"xray_tunnel_latency_histogram_seconds",
+	}
+	for _, metric := range expectedMetrics {
+		if !strings.Contains(bodyStr, metric) {
+			t.Errorf("metrics output should contain %s", metric)
+		}
+	}
+
+	if !strings.Contains(bodyStr, "# TYPE xray_tunnel_latency_histogram_seconds histogram") {
+		t.Error("expected histogram TYPE declaration")
 	}
 }

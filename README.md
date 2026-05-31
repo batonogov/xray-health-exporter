@@ -292,6 +292,25 @@ groups:
           description: "Tunnel {{ $labels.name }} has not been successfully checked for {{ $value }}s"
 ```
 
+## Grafana Dashboard
+
+A ready-to-use Grafana dashboard is available in the [`grafana/dashboard.json`](grafana/dashboard.json) file.
+
+**Panels:**
+- **Overview** — total tunnels, UP/DOWN counts, health rate, average latency
+- **Tunnel Status** — table with current status, latency, last success time, and HTTP status code per tunnel
+- **Latency** — time series of connection latency per tunnel
+- **Check Results** — success/failure check rate per tunnel
+- **HTTP Status Codes** — HTTP response code distribution over time
+- **Last Success** — time since last successful health check per tunnel
+
+**Import:**
+
+1. Open Grafana → Dashboards → Import
+2. Upload `grafana/dashboard.json` or paste its contents
+3. Select your Prometheus data source
+4. Click Import
+
 ## Development
 
 ```bash

@@ -105,6 +105,14 @@ var (
 		[]string{"name", "server", "security", "sni"},
 	)
 
+	tunnelErrorTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "xray_tunnel_error_total",
+			Help: "Total number of tunnel errors categorized by reason",
+		},
+		[]string{"name", "server", "security", "sni", "reason"},
+	)
+
 	exporterLeader = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "xray_exporter_leader",
@@ -162,6 +170,7 @@ func init() {
 	prometheus.MustRegister(tunnelCheckTotal)
 	prometheus.MustRegister(tunnelLastSuccess)
 	prometheus.MustRegister(tunnelHTTPStatus)
+	prometheus.MustRegister(tunnelErrorTotal)
 	prometheus.MustRegister(exporterLeader)
 	prometheus.MustRegister(exporterConfigReloadTotal)
 	prometheus.MustRegister(exporterConfigReloadErrorsTotal)
@@ -873,6 +882,76 @@ func (d *socks5Dialer) DialContext(ctx context.Context, network, addr string) (n
 	return conn, nil
 }
 
+// errorReasons lists all known error reason categories used in xray_tunnel_error_total.
+// Keep this slice in sync with the categories returned by classifyError.
+var errorReasons = []string{
+	"timeout",
+	"dns",
+	"tls",
+	"connection_refused",
+	"connection_reset",
+	"bad_status",
+	"socks_error",
+	"unknown",
+}
+
+// classifyError determines the category of an error for the xray_tunnel_error_total metric.
+func classifyError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	msg := err.Error()
+
+	// Timeout errors
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	if strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "context deadline") ||
+		strings.Contains(msg, "i/o timeout") {
+		return "timeout"
+	}
+	if strings.Contains(msg, "Client.Timeout") || strings.Contains(msg, "request canceled") {
+		return "timeout"
+	}
+
+	// TLS errors
+	if strings.Contains(msg, "tls:") || strings.Contains(msg, "TLS:") ||
+		strings.Contains(msg, "certificate") || strings.Contains(msg, "x509:") ||
+		strings.Contains(msg, "handshake failure") {
+		return "tls"
+	}
+
+	// DNS errors
+	if strings.Contains(msg, "lookup ") || strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "dns:") || strings.Contains(msg, "name resolution") ||
+		strings.Contains(msg, "Name or service not known") {
+		return "dns"
+	}
+
+	// Connection refused
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "Connection refused") {
+		return "connection_refused"
+	}
+
+	// Connection reset
+	if strings.Contains(msg, "connection reset by peer") || strings.Contains(msg, "broken pipe") {
+		return "connection_reset"
+	}
+
+	// SOCKS5 proxy errors
+	if strings.Contains(msg, "SOCKS5") || strings.Contains(msg, "socks5") ||
+		strings.Contains(msg, "SOCKS") {
+		return "socks_error"
+	}
+
+	return "unknown"
+}
+
 func checkTunnel(ti *TunnelInstance) {
 	start := time.Now()
 
@@ -894,6 +973,16 @@ func checkTunnel(ti *TunnelInstance) {
 		}
 	}
 
+	errorLabels := func(reason string) prometheus.Labels {
+		return prometheus.Labels{
+			"name":     ti.Name,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
+			"reason":   reason,
+		}
+	}
+
 	socksProxy := fmt.Sprintf("127.0.0.1:%d", ti.SocksPort)
 
 	// Сначала проверим что SOCKS5 прокси вообще работает
@@ -902,6 +991,7 @@ func checkTunnel(ti *TunnelInstance) {
 		slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", err)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(resultLabels("failure")).Inc()
+		tunnelErrorTotal.With(errorLabels(classifyError(err))).Inc()
 		return
 	}
 	conn.Close()
@@ -924,6 +1014,7 @@ func checkTunnel(ti *TunnelInstance) {
 		slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", err)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(resultLabels("failure")).Inc()
+		tunnelErrorTotal.With(errorLabels(classifyError(err))).Inc()
 		return
 	}
 	defer resp.Body.Close()
@@ -935,6 +1026,7 @@ func checkTunnel(ti *TunnelInstance) {
 		slog.Error("tunnel DOWN", "tunnel", ti.Name, "status_code", resp.StatusCode)
 		tunnelUp.With(labels).Set(0)
 		tunnelCheckTotal.With(resultLabels("failure")).Inc()
+		tunnelErrorTotal.With(errorLabels("bad_status")).Inc()
 		return
 	}
 
@@ -1184,6 +1276,11 @@ func cleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 		tunnelHTTPStatus.DeleteLabelValues(labels...)
 		tunnelCheckTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], "success")
 		tunnelCheckTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], "failure")
+
+		// Delete error metrics for all known reason categories
+		for _, reason := range errorReasons {
+			tunnelErrorTotal.DeleteLabelValues(labels[0], labels[1], labels[2], labels[3], reason)
+		}
 	}
 }
 

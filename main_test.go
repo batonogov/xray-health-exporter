@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3882,54 +3883,54 @@ func TestInitTunnel_XrayConfigFile_FallbackName(t *testing.T) {
 
 func TestSetupLogger(t *testing.T) {
 	tests := []struct {
-		name    string
-		env     map[string]string
-		wantLog string // substring to check in output
+		name      string
+		env       map[string]string
+		wantLevel slog.Level
 	}{
 		{
-			name:    "default level (info)",
-			env:     map[string]string{},
-			wantLog: "",
+			name:      "default level (info)",
+			env:       map[string]string{},
+			wantLevel: slog.LevelInfo,
 		},
 		{
-			name:    "debug level via LOG_LEVEL",
-			env:     map[string]string{"LOG_LEVEL": "debug"},
-			wantLog: "",
+			name:      "debug level via LOG_LEVEL",
+			env:       map[string]string{"LOG_LEVEL": "debug"},
+			wantLevel: slog.LevelDebug,
 		},
 		{
-			name:    "warn level",
-			env:     map[string]string{"LOG_LEVEL": "warn"},
-			wantLog: "",
+			name:      "warn level",
+			env:       map[string]string{"LOG_LEVEL": "warn"},
+			wantLevel: slog.LevelWarn,
 		},
 		{
-			name:    "error level",
-			env:     map[string]string{"LOG_LEVEL": "error"},
-			wantLog: "",
+			name:      "error level",
+			env:       map[string]string{"LOG_LEVEL": "error"},
+			wantLevel: slog.LevelError,
 		},
 		{
-			name:    "warning level (alias)",
-			env:     map[string]string{"LOG_LEVEL": "warning"},
-			wantLog: "",
+			name:      "warning level (alias)",
+			env:       map[string]string{"LOG_LEVEL": "warning"},
+			wantLevel: slog.LevelWarn,
 		},
 		{
-			name:    "unknown level falls back to info",
-			env:     map[string]string{"LOG_LEVEL": "verbose"},
-			wantLog: "",
+			name:      "unknown level falls back to info",
+			env:       map[string]string{"LOG_LEVEL": "verbose"},
+			wantLevel: slog.LevelInfo,
 		},
 		{
-			name:    "json format",
-			env:     map[string]string{"LOG_FORMAT": "json"},
-			wantLog: "",
+			name:      "json format",
+			env:       map[string]string{"LOG_FORMAT": "json"},
+			wantLevel: slog.LevelInfo,
 		},
 		{
-			name:    "deprecated DEBUG=true",
-			env:     map[string]string{"DEBUG": "true"},
-			wantLog: "",
+			name:      "deprecated DEBUG=true",
+			env:       map[string]string{"DEBUG": "true"},
+			wantLevel: slog.LevelDebug,
 		},
 		{
-			name:    "DEBUG=true with LOG_LEVEL set (LOG_LEVEL wins)",
-			env:     map[string]string{"DEBUG": "true", "LOG_LEVEL": "error"},
-			wantLog: "",
+			name:      "DEBUG=true with LOG_LEVEL set (LOG_LEVEL wins)",
+			env:       map[string]string{"DEBUG": "true", "LOG_LEVEL": "error"},
+			wantLevel: slog.LevelError,
 		},
 	}
 
@@ -3956,8 +3957,19 @@ func TestSetupLogger(t *testing.T) {
 				os.Setenv(k, v)
 			}
 
-			// setupLogger just sets the default logger; no panic = success
 			setupLogger()
+
+			logger := slog.Default()
+			ctx := context.Background()
+			if !logger.Handler().Enabled(ctx, tt.wantLevel) {
+				t.Errorf("expected level %v to be enabled", tt.wantLevel)
+			}
+			if tt.wantLevel > slog.LevelDebug {
+				belowLevel := tt.wantLevel - 4
+				if logger.Handler().Enabled(ctx, belowLevel) {
+					t.Errorf("expected level %v to be disabled (wantLevel=%v)", belowLevel, tt.wantLevel)
+				}
+			}
 		})
 	}
 }
@@ -4008,8 +4020,10 @@ func TestDialContext_WriteErrorDuringConnect(t *testing.T) {
 	dialer := newSOCKS5Dialer(socksAddr, 5*time.Second)
 	ctx := context.Background()
 	_, err = dialer.DialContext(ctx, "tcp", "example.com:80")
-	// May or may not error depending on timing, but should not panic
-	_ = err
+	// Connection should fail since server closes after handshake
+	if err == nil {
+		t.Error("expected error from DialContext due to server closing connection")
+	}
 }
 
 func TestDialContext_ReadErrorResponseDomain(t *testing.T) {
@@ -4542,7 +4556,6 @@ tunnels:
 }
 
 func TestWatchSubscriptions_WithTicker(t *testing.T) {
-	reloadCount := int32(0)
 
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.yaml")
@@ -4607,8 +4620,6 @@ subscriptions:
 	}
 
 	// reload should have been attempted at least once (the subscription will fail, but the function was called)
-	finalCount := atomic.LoadInt32(&reloadCount)
-	_ = finalCount // just ensuring the watcher ran
 }
 
 func TestWatchSubscriptions_ReloadCallback(t *testing.T) {
@@ -4780,7 +4791,7 @@ func TestInitializeTunnels_CleanupOnError(t *testing.T) {
 		},
 	}
 
-	instances, err := initializeTunnels(config, 15000)
+	instances, _, err := initializeTunnels(config, 15000)
 	if err == nil {
 		t.Error("expected error for second invalid tunnel")
 		// Clean up if somehow it succeeded

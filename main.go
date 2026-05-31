@@ -195,6 +195,7 @@ type Tunnel struct {
 	CheckURL       string `yaml:"check_url"`
 	CheckInterval  string `yaml:"check_interval"`
 	CheckTimeout   string `yaml:"check_timeout"`
+	SocksPort      int    `yaml:"socks_port"`
 }
 
 type VLESSConfig struct {
@@ -1048,24 +1049,54 @@ func (t *Tunnel) Validate() error {
 // This allows catching errors before stopping existing tunnels during reload.
 func validateTunnels(config *Config) error {
 	var errs []error
+	seenPorts := make(map[int]string)
 	for i, tunnel := range config.Tunnels {
 		if err := tunnel.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("tunnel %d (%s): %w", i+1, tunnel.Name, err))
+		}
+		if tunnel.SocksPort != 0 {
+			if tunnel.SocksPort < 1 || tunnel.SocksPort > 65535 {
+				errs = append(errs, fmt.Errorf("tunnel %d (%s): socks_port %d is out of valid range [1-65535]", i+1, tunnel.Name, tunnel.SocksPort))
+			} else if existing, ok := seenPorts[tunnel.SocksPort]; ok {
+				errs = append(errs, fmt.Errorf("tunnel %d (%s): socks_port %d is already used by tunnel %q", i+1, tunnel.Name, tunnel.SocksPort, existing))
+			} else {
+				seenPorts[tunnel.SocksPort] = tunnel.Name
+			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// initializeTunnels creates and starts all tunnel instances from config
-func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, error) {
+// initializeTunnels creates and starts all tunnel instances from config.
+// Returns the instances and the next available auto-port (past all assigned auto-ports).
+func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, int, error) {
 	if len(config.Tunnels) == 0 {
-		return nil, fmt.Errorf("no tunnels to initialize")
+		return nil, baseSocksPort, fmt.Errorf("no tunnels to initialize")
 	}
 
 	var tunnelInstances []*TunnelInstance
 
+	// Collect custom ports to avoid conflicts during auto-assignment.
+	reserved := make(map[int]bool)
+	for _, t := range config.Tunnels {
+		if t.SocksPort > 0 {
+			reserved[t.SocksPort] = true
+		}
+	}
+
+	nextAutoPort := baseSocksPort
+
 	for i, tunnel := range config.Tunnels {
-		socksPort := baseSocksPort + i
+		var socksPort int
+		if tunnel.SocksPort > 0 {
+			socksPort = tunnel.SocksPort
+		} else {
+			for reserved[nextAutoPort] {
+				nextAutoPort++
+			}
+			socksPort = nextAutoPort
+			nextAutoPort++
+		}
 
 		slog.Debug("initializing tunnel", "index", i+1, "tunnel", tunnel.Name, "socks_port", socksPort)
 
@@ -1078,7 +1109,7 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 					instance.cancelFunc()
 				}
 			}
-			return nil, fmt.Errorf("failed to initialize tunnel %d: %v", i+1, err)
+			return nil, baseSocksPort, fmt.Errorf("failed to initialize tunnel %d: %v", i+1, err)
 		}
 
 		tunnelInstances = append(tunnelInstances, ti)
@@ -1104,7 +1135,7 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 		go runTunnelChecker(ctx, ti)
 	}
 
-	return tunnelInstances, nil
+	return tunnelInstances, nextAutoPort, nil
 }
 
 // stopTunnels gracefully stops all tunnel instances
@@ -1193,7 +1224,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	newBasePort := tm.nextSocksPort
 	tm.mu.RUnlock()
 
-	newInstances, err := initializeTunnels(newConfig, newBasePort)
+	newInstances, nextAutoPort, err := initializeTunnels(newConfig, newBasePort)
 	if err != nil {
 		slog.Error("failed to start new tunnels, keeping current", "error", err)
 		exporterConfigReloadErrorsTotal.Inc()
@@ -1204,7 +1235,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	tm.mu.Lock()
 	oldInstances := tm.instances
 	tm.instances = newInstances
-	tm.nextSocksPort = newBasePort + len(newInstances)
+	tm.nextSocksPort = nextAutoPort
 	tm.config = newConfig
 	tm.mu.Unlock()
 
@@ -1469,14 +1500,14 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
 
-	tunnelInstances, err := initializeTunnels(config, defaultSocksPort)
+	tunnelInstances, nextAutoPort, err := initializeTunnels(config, defaultSocksPort)
 	if err != nil {
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
 
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
-	tunnelManager.nextSocksPort = defaultSocksPort + len(tunnelInstances)
+	tunnelManager.nextSocksPort = nextAutoPort
 	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 

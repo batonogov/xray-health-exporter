@@ -966,6 +966,384 @@ func TestTunnelMetricLabels(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_SocksPort(t *testing.T) {
+	t.Run("tunnel with socks_port", func(t *testing.T) {
+		yaml := `tunnels:
+  - name: "custom-port"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
+    socks_port: 2080`
+
+		tmpDir := t.TempDir()
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		os.WriteFile(configFile, []byte(yaml), 0644)
+
+		config, err := loadConfig(configFile)
+		if err != nil {
+			t.Fatalf("loadConfig() error = %v", err)
+		}
+		if config.Tunnels[0].SocksPort != 2080 {
+			t.Errorf("SocksPort = %v, want 2080", config.Tunnels[0].SocksPort)
+		}
+	})
+
+	t.Run("tunnel without socks_port defaults to 0", func(t *testing.T) {
+		yaml := `tunnels:
+  - name: "auto-port"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+		tmpDir := t.TempDir()
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		os.WriteFile(configFile, []byte(yaml), 0644)
+
+		config, err := loadConfig(configFile)
+		if err != nil {
+			t.Fatalf("loadConfig() error = %v", err)
+		}
+		if config.Tunnels[0].SocksPort != 0 {
+			t.Errorf("SocksPort = %v, want 0 (auto)", config.Tunnels[0].SocksPort)
+		}
+	})
+}
+
+func TestValidateTunnels_SocksPort(t *testing.T) {
+	baseTunnel := func() Tunnel {
+		return Tunnel{
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+		}
+	}
+
+	t.Run("valid custom socks_port", func(t *testing.T) {
+		tunnel := baseTunnel()
+		tunnel.Name = "t1"
+		tunnel.SocksPort = 2080
+		config := &Config{Tunnels: []Tunnel{tunnel}}
+		if err := validateTunnels(config); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("socks_port=0 means auto-assign and is valid", func(t *testing.T) {
+		tunnel := baseTunnel()
+		tunnel.Name = "t1"
+		tunnel.SocksPort = 0
+		config := &Config{Tunnels: []Tunnel{tunnel}}
+		if err := validateTunnels(config); err != nil {
+			t.Errorf("expected no error for socks_port=0 (auto), got: %v", err)
+		}
+	})
+
+	t.Run("socks_port out of range negative", func(t *testing.T) {
+		tunnel := baseTunnel()
+		tunnel.Name = "t1"
+		tunnel.SocksPort = -1
+		config := &Config{Tunnels: []Tunnel{tunnel}}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Fatal("expected error for negative socks_port")
+		}
+		if !strings.Contains(err.Error(), "out of valid range") {
+			t.Errorf("expected range error, got: %v", err)
+		}
+	})
+
+	t.Run("socks_port out of range too high", func(t *testing.T) {
+		tunnel := baseTunnel()
+		tunnel.Name = "t1"
+		tunnel.SocksPort = 70000
+		config := &Config{Tunnels: []Tunnel{tunnel}}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Fatal("expected error for socks_port > 65535")
+		}
+		if !strings.Contains(err.Error(), "out of valid range") {
+			t.Errorf("expected range error, got: %v", err)
+		}
+	})
+
+	t.Run("duplicate socks_port", func(t *testing.T) {
+		t1 := baseTunnel()
+		t1.Name = "first"
+		t1.SocksPort = 2080
+		t2 := baseTunnel()
+		t2.Name = "second"
+		t2.SocksPort = 2080
+		config := &Config{Tunnels: []Tunnel{t1, t2}}
+		err := validateTunnels(config)
+		if err == nil {
+			t.Fatal("expected error for duplicate socks_port")
+		}
+		if !strings.Contains(err.Error(), "already used") {
+			t.Errorf("expected duplicate error, got: %v", err)
+		}
+	})
+
+	t.Run("different socks_ports are fine", func(t *testing.T) {
+		t1 := baseTunnel()
+		t1.Name = "first"
+		t1.SocksPort = 2080
+		t2 := baseTunnel()
+		t2.Name = "second"
+		t2.SocksPort = 2081
+		config := &Config{Tunnels: []Tunnel{t1, t2}}
+		if err := validateTunnels(config); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("mix of custom and auto ports is fine", func(t *testing.T) {
+		t1 := baseTunnel()
+		t1.Name = "custom"
+		t1.SocksPort = 2080
+		t2 := baseTunnel()
+		t2.Name = "auto"
+		t2.SocksPort = 0
+		config := &Config{Tunnels: []Tunnel{t1, t2}}
+		if err := validateTunnels(config); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+}
+
+func TestInitializeTunnels_SocksPort(t *testing.T) {
+	t.Run("custom socks_port is used", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "custom-port",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      25000,
+				},
+			},
+		}
+
+		instances, _, err := initializeTunnels(config, defaultSocksPort)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		if instances[0].SocksPort != 25000 {
+			t.Errorf("SocksPort = %v, want 25000", instances[0].SocksPort)
+		}
+	})
+
+	t.Run("auto-assigned ports skip custom ports", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      25000,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, _, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1 should get 1080, custom should get 25000, auto2 should get 1081
+		if instances[0].SocksPort != 1080 {
+			t.Errorf("auto1 SocksPort = %v, want 1080", instances[0].SocksPort)
+		}
+		if instances[1].SocksPort != 25000 {
+			t.Errorf("custom SocksPort = %v, want 25000", instances[1].SocksPort)
+		}
+		if instances[2].SocksPort != 1081 {
+			t.Errorf("auto2 SocksPort = %v, want 1081", instances[2].SocksPort)
+		}
+	})
+
+	t.Run("auto ports skip custom ports that fall in auto range", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		// Custom port 1081 falls in the auto range [1080, 1081, 1082]
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      1081,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "auto3",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, _, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1=1080, custom=1081 (reserved), auto2 skips 1081 -> 1082, auto3=1083
+		if instances[0].SocksPort != 1080 {
+			t.Errorf("auto1 SocksPort = %v, want 1080", instances[0].SocksPort)
+		}
+		if instances[1].SocksPort != 1081 {
+			t.Errorf("custom SocksPort = %v, want 1081", instances[1].SocksPort)
+		}
+		if instances[2].SocksPort != 1082 {
+			t.Errorf("auto2 SocksPort = %v, want 1082", instances[2].SocksPort)
+		}
+		if instances[3].SocksPort != 1083 {
+			t.Errorf("auto3 SocksPort = %v, want 1083", instances[3].SocksPort)
+		}
+	})
+
+	t.Run("nextAutoPort skips custom ports and returns correct next port", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      1081,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, nextAutoPort, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1=1080, custom=1081 (reserved), auto2 skips 1081 -> 1082
+		// nextAutoPort should be 1083 (past the last auto-assigned 1082)
+		if nextAutoPort != 1083 {
+			t.Errorf("nextAutoPort = %v, want 1083", nextAutoPort)
+		}
+	})
+
+	t.Run("nextAutoPort not affected by high custom port", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      20000,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, nextAutoPort, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1=1080, custom=20000, auto2=1081
+		// nextAutoPort should be 1082 (only auto ports count), NOT 20001
+		if nextAutoPort != 1082 {
+			t.Errorf("nextAutoPort = %v, want 1082 (should not be affected by custom port 20000)", nextAutoPort)
+		}
+	})
+}
+
 func TestCleanupRemovedTunnelMetrics(t *testing.T) {
 	resetAllMetrics := func() {
 		tunnelUp.Reset()
@@ -1091,7 +1469,7 @@ func TestInitializeTunnels(t *testing.T) {
 			Tunnels: []Tunnel{},
 		}
 
-		instances, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for empty tunnels")
 		}
@@ -1114,7 +1492,7 @@ func TestInitializeTunnels(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for invalid URL")
 		}
@@ -3803,5 +4181,62 @@ func TestMetricsEndpoint_IncludesHistogram(t *testing.T) {
 
 	if !strings.Contains(bodyStr, "# TYPE xray_tunnel_latency_histogram_seconds histogram") {
 		t.Error("expected histogram TYPE declaration")
+	}
+}
+
+// Benchmarks
+
+func BenchmarkParseVLESSURL(b *testing.B) {
+	urls := []string{
+		"vless://uuid-123@example.com:443?type=tcp&security=reality&pbk=test-key&sni=google.com&sid=short123&spx=/&fp=chrome",
+		"vless://uuid-456@server.net:8443?type=ws&security=tls&sni=server.net&fp=firefox&host=server.net&path=%2Fws",
+		"vless://uuid-789@grpc.example.com:443/?type=grpc&serviceName=grpc-service&authority=grpc-host&multiMode=true&security=reality&pbk=test-pbk&fp=chrome&sni=grpc.example.com&sid=ab12cd34",
+		"vless://uuid@minimal.com:443?type=tcp&security=none",
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := parseVLESSURL(urls[i%len(urls)])
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkCreateXrayConfig(b *testing.B) {
+	configs := []*VLESSConfig{
+		{UUID: "test-uuid-1", Address: "example.com", Port: 443, Type: "tcp", Security: "reality", PBK: "test-key", SNI: "google.com", SID: "short123", SPX: "/", FP: "chrome"},
+		{UUID: "test-uuid-2", Address: "server.net", Port: 8443, Type: "ws", Security: "tls", SNI: "server.net", FP: "firefox", Host: "server.net", Path: "/ws"},
+		{UUID: "test-uuid-3", Address: "grpc.example.com", Port: 443, Type: "grpc", Security: "reality", ServiceName: "grpc-service", Authority: "grpc-host", MultiMode: true, PBK: "test-pbk", SNI: "grpc.example.com", FP: "chrome", SID: "ab12cd34"},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := createXrayConfig(configs[i%len(configs)], 1080+i%10)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMetricsUpdate(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		labels := prometheus.Labels{
+			"name":     fmt.Sprintf("bench-tunnel-%d", i%50),
+			"server":   fmt.Sprintf("server-%d.example.com:443", i%50),
+			"security": "tls",
+			"sni":      "example.com",
+		}
+		tunnelUp.With(labels).Set(1)
+		tunnelLatency.With(labels).Set(0.123)
+		tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+		tunnelHTTPStatus.With(labels).Set(200)
+		resultLabels := prometheus.Labels{
+			"name":     labels["name"],
+			"server":   labels["server"],
+			"security": labels["security"],
+			"sni":      labels["sni"],
+			"result":   "success",
+		}
+		tunnelCheckTotal.With(resultLabels).Inc()
 	}
 }

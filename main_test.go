@@ -1127,7 +1127,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort)
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1171,7 +1171,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, 1080)
+		instances, _, err := initializeTunnels(config, 1080)
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1230,7 +1230,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, 1080)
+		instances, _, err := initializeTunnels(config, 1080)
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1248,6 +1248,98 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 		}
 		if instances[3].SocksPort != 1083 {
 			t.Errorf("auto3 SocksPort = %v, want 1083", instances[3].SocksPort)
+		}
+	})
+
+	t.Run("nextAutoPort skips custom ports and returns correct next port", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      1081,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, nextAutoPort, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1=1080, custom=1081 (reserved), auto2 skips 1081 -> 1082
+		// nextAutoPort should be 1083 (past the last auto-assigned 1082)
+		if nextAutoPort != 1083 {
+			t.Errorf("nextAutoPort = %v, want 1083", nextAutoPort)
+		}
+	})
+
+	t.Run("nextAutoPort not affected by high custom port", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      20000,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, nextAutoPort, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1=1080, custom=20000, auto2=1081
+		// nextAutoPort should be 1082 (only auto ports count), NOT 20001
+		if nextAutoPort != 1082 {
+			t.Errorf("nextAutoPort = %v, want 1082 (should not be affected by custom port 20000)", nextAutoPort)
 		}
 	})
 }
@@ -1377,7 +1469,7 @@ func TestInitializeTunnels(t *testing.T) {
 			Tunnels: []Tunnel{},
 		}
 
-		instances, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for empty tunnels")
 		}
@@ -1400,7 +1492,7 @@ func TestInitializeTunnels(t *testing.T) {
 			},
 		}
 
-		instances, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort)
 		if err == nil {
 			t.Error("expected error for invalid URL")
 		}

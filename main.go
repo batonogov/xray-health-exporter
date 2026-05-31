@@ -1067,10 +1067,11 @@ func validateTunnels(config *Config) error {
 	return errors.Join(errs...)
 }
 
-// initializeTunnels creates and starts all tunnel instances from config
-func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, error) {
+// initializeTunnels creates and starts all tunnel instances from config.
+// Returns the instances and the next available auto-port (past all assigned auto-ports).
+func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, int, error) {
 	if len(config.Tunnels) == 0 {
-		return nil, fmt.Errorf("no tunnels to initialize")
+		return nil, baseSocksPort, fmt.Errorf("no tunnels to initialize")
 	}
 
 	var tunnelInstances []*TunnelInstance
@@ -1108,7 +1109,7 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 					instance.cancelFunc()
 				}
 			}
-			return nil, fmt.Errorf("failed to initialize tunnel %d: %v", i+1, err)
+			return nil, baseSocksPort, fmt.Errorf("failed to initialize tunnel %d: %v", i+1, err)
 		}
 
 		tunnelInstances = append(tunnelInstances, ti)
@@ -1134,7 +1135,7 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 		go runTunnelChecker(ctx, ti)
 	}
 
-	return tunnelInstances, nil
+	return tunnelInstances, nextAutoPort, nil
 }
 
 // stopTunnels gracefully stops all tunnel instances
@@ -1223,7 +1224,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	newBasePort := tm.nextSocksPort
 	tm.mu.RUnlock()
 
-	newInstances, err := initializeTunnels(newConfig, newBasePort)
+	newInstances, nextAutoPort, err := initializeTunnels(newConfig, newBasePort)
 	if err != nil {
 		slog.Error("failed to start new tunnels, keeping current", "error", err)
 		exporterConfigReloadErrorsTotal.Inc()
@@ -1234,14 +1235,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	tm.mu.Lock()
 	oldInstances := tm.instances
 	tm.instances = newInstances
-	// Advance nextSocksPort past the highest auto-assigned port used.
-	maxAutoPort := newBasePort
-	for _, inst := range newInstances {
-		if inst.SocksPort >= maxAutoPort {
-			maxAutoPort = inst.SocksPort + 1
-		}
-	}
-	tm.nextSocksPort = maxAutoPort
+	tm.nextSocksPort = nextAutoPort
 	tm.config = newConfig
 	tm.mu.Unlock()
 
@@ -1506,21 +1500,14 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
 
-	tunnelInstances, err := initializeTunnels(config, defaultSocksPort)
+	tunnelInstances, nextAutoPort, err := initializeTunnels(config, defaultSocksPort)
 	if err != nil {
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
 
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
-	// Advance nextSocksPort past the highest auto-assigned port used.
-	maxAutoPort := defaultSocksPort
-	for _, inst := range tunnelInstances {
-		if inst.SocksPort >= maxAutoPort {
-			maxAutoPort = inst.SocksPort + 1
-		}
-	}
-	tunnelManager.nextSocksPort = maxAutoPort
+	tunnelManager.nextSocksPort = nextAutoPort
 	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 

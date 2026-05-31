@@ -1074,6 +1074,15 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 	}
 
 	var tunnelInstances []*TunnelInstance
+
+	// Collect custom ports to avoid conflicts during auto-assignment.
+	reserved := make(map[int]bool)
+	for _, t := range config.Tunnels {
+		if t.SocksPort > 0 {
+			reserved[t.SocksPort] = true
+		}
+	}
+
 	nextAutoPort := baseSocksPort
 
 	for i, tunnel := range config.Tunnels {
@@ -1081,6 +1090,9 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, er
 		if tunnel.SocksPort > 0 {
 			socksPort = tunnel.SocksPort
 		} else {
+			for reserved[nextAutoPort] {
+				nextAutoPort++
+			}
 			socksPort = nextAutoPort
 			nextAutoPort++
 		}
@@ -1222,14 +1234,14 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	tm.mu.Lock()
 	oldInstances := tm.instances
 	tm.instances = newInstances
-	// Advance nextSocksPort: only count auto-assigned ports (SocksPort == 0 in config).
-	autoCount := 0
-	for _, t := range newConfig.Tunnels {
-		if t.SocksPort == 0 {
-			autoCount++
+	// Advance nextSocksPort past the highest auto-assigned port used.
+	maxAutoPort := newBasePort
+	for _, inst := range newInstances {
+		if inst.SocksPort >= maxAutoPort {
+			maxAutoPort = inst.SocksPort + 1
 		}
 	}
-	tm.nextSocksPort = newBasePort + autoCount
+	tm.nextSocksPort = maxAutoPort
 	tm.config = newConfig
 	tm.mu.Unlock()
 
@@ -1501,13 +1513,14 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	tunnelManager.mu.Lock()
 	tunnelManager.instances = tunnelInstances
-	autoCount := 0
-	for _, t := range config.Tunnels {
-		if t.SocksPort == 0 {
-			autoCount++
+	// Advance nextSocksPort past the highest auto-assigned port used.
+	maxAutoPort := defaultSocksPort
+	for _, inst := range tunnelInstances {
+		if inst.SocksPort >= maxAutoPort {
+			maxAutoPort = inst.SocksPort + 1
 		}
 	}
-	tunnelManager.nextSocksPort = defaultSocksPort + autoCount
+	tunnelManager.nextSocksPort = maxAutoPort
 	tunnelManager.config = config
 	tunnelManager.mu.Unlock()
 

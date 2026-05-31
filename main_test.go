@@ -1188,6 +1188,68 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			t.Errorf("auto2 SocksPort = %v, want 1081", instances[2].SocksPort)
 		}
 	})
+
+	t.Run("auto ports skip custom ports that fall in auto range", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		xrayConfigPath := filepath.Join(tmpDir, "xray.json")
+		xrayJSON := `{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"test-uuid","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}`
+		os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0644)
+
+		// Custom port 1081 falls in the auto range [1080, 1081, 1082]
+		config := &Config{
+			Tunnels: []Tunnel{
+				{
+					Name:           "auto1",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "custom",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+					SocksPort:      1081,
+				},
+				{
+					Name:           "auto2",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+				{
+					Name:           "auto3",
+					XrayConfigFile: xrayConfigPath,
+					CheckURL:       "https://example.com",
+					CheckInterval:  "30s",
+					CheckTimeout:   "10s",
+				},
+			},
+		}
+
+		instances, err := initializeTunnels(config, 1080)
+		if err != nil {
+			t.Fatalf("initializeTunnels() error = %v", err)
+		}
+		defer stopTunnels(instances)
+
+		// auto1=1080, custom=1081 (reserved), auto2 skips 1081 -> 1082, auto3=1083
+		if instances[0].SocksPort != 1080 {
+			t.Errorf("auto1 SocksPort = %v, want 1080", instances[0].SocksPort)
+		}
+		if instances[1].SocksPort != 1081 {
+			t.Errorf("custom SocksPort = %v, want 1081", instances[1].SocksPort)
+		}
+		if instances[2].SocksPort != 1082 {
+			t.Errorf("auto2 SocksPort = %v, want 1082", instances[2].SocksPort)
+		}
+		if instances[3].SocksPort != 1083 {
+			t.Errorf("auto3 SocksPort = %v, want 1083", instances[3].SocksPort)
+		}
+	})
 }
 
 func TestCleanupRemovedTunnelMetrics(t *testing.T) {
@@ -4027,5 +4089,62 @@ func TestMetricsEndpoint_IncludesHistogram(t *testing.T) {
 
 	if !strings.Contains(bodyStr, "# TYPE xray_tunnel_latency_histogram_seconds histogram") {
 		t.Error("expected histogram TYPE declaration")
+	}
+}
+
+// Benchmarks
+
+func BenchmarkParseVLESSURL(b *testing.B) {
+	urls := []string{
+		"vless://uuid-123@example.com:443?type=tcp&security=reality&pbk=test-key&sni=google.com&sid=short123&spx=/&fp=chrome",
+		"vless://uuid-456@server.net:8443?type=ws&security=tls&sni=server.net&fp=firefox&host=server.net&path=%2Fws",
+		"vless://uuid-789@grpc.example.com:443/?type=grpc&serviceName=grpc-service&authority=grpc-host&multiMode=true&security=reality&pbk=test-pbk&fp=chrome&sni=grpc.example.com&sid=ab12cd34",
+		"vless://uuid@minimal.com:443?type=tcp&security=none",
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := parseVLESSURL(urls[i%len(urls)])
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkCreateXrayConfig(b *testing.B) {
+	configs := []*VLESSConfig{
+		{UUID: "test-uuid-1", Address: "example.com", Port: 443, Type: "tcp", Security: "reality", PBK: "test-key", SNI: "google.com", SID: "short123", SPX: "/", FP: "chrome"},
+		{UUID: "test-uuid-2", Address: "server.net", Port: 8443, Type: "ws", Security: "tls", SNI: "server.net", FP: "firefox", Host: "server.net", Path: "/ws"},
+		{UUID: "test-uuid-3", Address: "grpc.example.com", Port: 443, Type: "grpc", Security: "reality", ServiceName: "grpc-service", Authority: "grpc-host", MultiMode: true, PBK: "test-pbk", SNI: "grpc.example.com", FP: "chrome", SID: "ab12cd34"},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := createXrayConfig(configs[i%len(configs)], 1080+i%10)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMetricsUpdate(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		labels := prometheus.Labels{
+			"name":     fmt.Sprintf("bench-tunnel-%d", i%50),
+			"server":   fmt.Sprintf("server-%d.example.com:443", i%50),
+			"security": "tls",
+			"sni":      "example.com",
+		}
+		tunnelUp.With(labels).Set(1)
+		tunnelLatency.With(labels).Set(0.123)
+		tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+		tunnelHTTPStatus.With(labels).Set(200)
+		resultLabels := prometheus.Labels{
+			"name":     labels["name"],
+			"server":   labels["server"],
+			"security": labels["security"],
+			"sni":      labels["sni"],
+			"result":   "success",
+		}
+		tunnelCheckTotal.With(resultLabels).Inc()
 	}
 }

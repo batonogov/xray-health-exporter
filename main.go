@@ -52,6 +52,9 @@ const (
 // Version is set at build time via -ldflags="-X main.Version=..."
 var Version = "dev"
 
+// Commit is set at build time via -ldflags="-X main.Commit=..."
+var Commit = ""
+
 var (
 	tunnelUp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -1492,6 +1495,7 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	stopTunnels(finalInstances)
 	cleanupRemovedTunnelMetrics(finalInstances, nil)
+	exporterTunnelsConfigured.Set(0)
 
 	wg.Wait()
 	slog.Info("probing stopped")
@@ -1604,7 +1608,7 @@ func main() {
 	setupLogger()
 
 	exporterStartTime = time.Now()
-	exporterBuildInfo.WithLabelValues(Version, runtime.Version(), "").Set(1)
+	exporterBuildInfo.WithLabelValues(Version, runtime.Version(), Commit).Set(1)
 
 	slog.Info("xray-health-exporter starting", "version", Version)
 

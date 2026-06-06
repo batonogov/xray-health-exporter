@@ -830,9 +830,9 @@ func TestCheckTunnel(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Выполняем проверку
-	// Примечание: checkTunnel изменяет метрики Prometheus, но не возвращает значение
+	// Примечание: checkAndRecord изменяет метрики Prometheus, но не возвращает значение
 	// Мы можем только проверить, что она не паникует
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 
 	// Тест завершен успешно, если не было паники
 }
@@ -903,7 +903,7 @@ tunnels:
 	}
 
 	// Инициализируем менеджер
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	// Запускаем watcher в горутине с таймаутом
 	done := make(chan struct{})
@@ -1129,7 +1129,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, _, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort, defaultChecker{}, prometheusMetrics{})
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1173,7 +1173,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, _, err := initializeTunnels(config, 1080)
+		instances, _, err := initializeTunnels(config, 1080, defaultChecker{}, prometheusMetrics{})
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1232,7 +1232,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, _, err := initializeTunnels(config, 1080)
+		instances, _, err := initializeTunnels(config, 1080, defaultChecker{}, prometheusMetrics{})
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1286,7 +1286,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, nextAutoPort, err := initializeTunnels(config, 1080)
+		instances, nextAutoPort, err := initializeTunnels(config, 1080, defaultChecker{}, prometheusMetrics{})
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1332,7 +1332,7 @@ func TestInitializeTunnels_SocksPort(t *testing.T) {
 			},
 		}
 
-		instances, nextAutoPort, err := initializeTunnels(config, 1080)
+		instances, nextAutoPort, err := initializeTunnels(config, 1080, defaultChecker{}, prometheusMetrics{})
 		if err != nil {
 			t.Fatalf("initializeTunnels() error = %v", err)
 		}
@@ -1552,7 +1552,7 @@ func TestInitializeTunnels(t *testing.T) {
 			Tunnels: []Tunnel{},
 		}
 
-		instances, _, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort, defaultChecker{}, prometheusMetrics{})
 		if err == nil {
 			t.Error("expected error for empty tunnels")
 		}
@@ -1575,7 +1575,7 @@ func TestInitializeTunnels(t *testing.T) {
 			},
 		}
 
-		instances, _, err := initializeTunnels(config, defaultSocksPort)
+		instances, _, err := initializeTunnels(config, defaultSocksPort, defaultChecker{}, prometheusMetrics{})
 		if err == nil {
 			t.Error("expected error for invalid URL")
 		}
@@ -2052,7 +2052,7 @@ func TestCheckTunnel_Timeout(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// checkTunnel должен установить метрику в 0 из-за timeout
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 
 	// Тест проходит если не было паники
 	// checkTunnel внутри логирует ошибку и устанавливает tunnelUp в 0
@@ -2152,7 +2152,7 @@ func TestCheckTunnel_BadStatusCodes(t *testing.T) {
 			}
 
 			time.Sleep(100 * time.Millisecond)
-			checkTunnel(ti)
+			checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 
 			// Проверяем что метрика HTTP status установлена правильно
 			// tunnelHTTPStatus должен содержать tc.statusCode
@@ -2230,7 +2230,7 @@ func TestCheckTunnel_DNSError(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// checkTunnel должен установить метрику в 0 из-за DNS ошибки
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 
 	// Тест проходит если не было паники
 }
@@ -2312,7 +2312,7 @@ func TestCheckTunnel_TLSError(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// checkTunnel должен обработать TLS ошибку
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 
 	// Тест проходит если не было паники
 }
@@ -2396,7 +2396,7 @@ func TestRunTunnelChecker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Запускаем checker
-	go runTunnelChecker(ctx, ti)
+	go runTunnelChecker(ctx, ti, defaultChecker{}, prometheusMetrics{})
 
 	// Ждем несколько проверок
 	time.Sleep(1600 * time.Millisecond)
@@ -2499,7 +2499,7 @@ func TestRunTunnelChecker_Context(t *testing.T) {
 
 	// Запускаем checker
 	go func() {
-		runTunnelChecker(ctx, ti)
+		runTunnelChecker(ctx, ti, defaultChecker{}, prometheusMetrics{})
 		done <- true
 	}()
 
@@ -2884,7 +2884,7 @@ tunnels:
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -2938,7 +2938,7 @@ tunnels:
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -3301,10 +3301,9 @@ func TestReloadConfig_InvalidConfigKeepsOldTunnels(t *testing.T) {
 		CheckInterval: 30 * time.Second,
 	}
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{existingInstance},
-		nextSocksPort: defaultSocksPort + 1,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{existingInstance}
+	tm.nextSocksPort = defaultSocksPort + 1
 
 	// Reload should fail validation and keep old tunnels
 	err := tm.reloadConfig(configFile)
@@ -3340,7 +3339,7 @@ tunnels:
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -3777,9 +3776,8 @@ func TestResolveSubscriptions_NoSubscriptions(t *testing.T) {
 }
 
 func TestWatchSubscriptions_NoSubscriptions(t *testing.T) {
-	tm := &TunnelManager{
-		config: &Config{},
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.config = &Config{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -3800,7 +3798,7 @@ func TestWatchSubscriptions_NoSubscriptions(t *testing.T) {
 }
 
 func TestWatchSubscriptions_NilConfig(t *testing.T) {
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -4538,7 +4536,7 @@ func TestCheckTunnel_SOCKSNotReachable(t *testing.T) {
 		CheckInterval: 30 * time.Second,
 	}
 
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 	// Should not panic, tunnel should be marked as down
 }
 
@@ -4610,7 +4608,7 @@ func TestCheckTunnel_BodyReadError(t *testing.T) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 	// Should handle body read error gracefully
 }
 
@@ -4679,7 +4677,7 @@ func TestCheckTunnel_BodyReadSuccess(t *testing.T) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	checkTunnel(ti)
+	checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 }
 
 func TestRunProbing(t *testing.T) {
@@ -4768,11 +4766,10 @@ subscriptions:
 		CheckInterval: 30 * time.Second,
 	}
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{existingInstance},
-		nextSocksPort: 1081,
-		config:        cfg,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{existingInstance}
+	tm.nextSocksPort = 1081
+	tm.config = cfg
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -4838,11 +4835,10 @@ subscriptions:
 		CheckInterval: 30 * time.Second,
 	}
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{existingInstance},
-		nextSocksPort: 1082,
-		config:        cfg,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{existingInstance}
+	tm.nextSocksPort = 1082
+	tm.config = cfg
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -4878,10 +4874,9 @@ func TestCleanupRemovedTunnelMetrics_EmptyOld(t *testing.T) {
 }
 
 func TestReloadConfig_LoadError(t *testing.T) {
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{},
-		nextSocksPort: 1080,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{}
+	tm.nextSocksPort = 1080
 
 	err := tm.reloadConfig("/nonexistent/config.yaml")
 	if err == nil {
@@ -4902,10 +4897,9 @@ func TestReloadConfig_NoTunnelsAfterResolve(t *testing.T) {
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{},
-		nextSocksPort: 1080,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{}
+	tm.nextSocksPort = 1080
 
 	err := tm.reloadConfig(configFile)
 	if err == nil {
@@ -4926,10 +4920,9 @@ func TestReloadConfig_ValidationError(t *testing.T) {
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{},
-		nextSocksPort: 1080,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{}
+	tm.nextSocksPort = 1080
 
 	err := tm.reloadConfig(configFile)
 	if err == nil {
@@ -4963,7 +4956,7 @@ func TestInitializeTunnels_CleanupOnError(t *testing.T) {
 		},
 	}
 
-	instances, _, err := initializeTunnels(config, 15000)
+	instances, _, err := initializeTunnels(config, 15000, defaultChecker{}, prometheusMetrics{})
 	if err == nil {
 		t.Error("expected error for second invalid tunnel")
 		// Clean up if somehow it succeeded
@@ -4985,7 +4978,7 @@ func TestWatchConfigFile_ContextCancel(t *testing.T) {
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -5014,7 +5007,7 @@ func TestWatchConfigFile_CreateEvent(t *testing.T) {
 
 	// Don't create the file initially; watcher starts with directory watch
 
-	tm := &TunnelManager{}
+	tm := NewTunnelManager(nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -5276,7 +5269,7 @@ func TestRunTunnelChecker_ImmediateCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runTunnelChecker(ctx, ti)
+		runTunnelChecker(ctx, ti, defaultChecker{}, prometheusMetrics{})
 		close(done)
 	}()
 
@@ -5353,7 +5346,7 @@ func TestConcurrentCheckTunnel(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			checkTunnel(ti)
+			checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
 		}()
 	}
 	wg.Wait()
@@ -5371,10 +5364,9 @@ func TestConcurrentTunnelManagerReload(t *testing.T) {
 		t.Fatalf("failed to create config: %v", err)
 	}
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{},
-		nextSocksPort: 1080,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{}
+	tm.nextSocksPort = 1080
 
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {

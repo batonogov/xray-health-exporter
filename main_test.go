@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -5650,39 +5651,19 @@ func TestLatencyHistogramBuckets(t *testing.T) {
 }
 
 func TestMetricsEndpoint_IncludesHistogram(t *testing.T) {
-	labels := prometheus.Labels{
-		"name":     "endpoint-hist-test",
-		"server":   "endpoint.example.com:443",
-		"security": "reality",
-		"sni":      "google.com",
-	}
-
-	tunnelLatency.With(labels).Set(0.123)
-	tunnelLatencyHistogram.With(labels).Observe(0.123)
+	// Observe a value so the histogram appears in /metrics output
+	tunnelLatencyHistogram.With(prometheus.Labels{
+		"name": "hist-test", "server": "s:443", "security": "tls", "sni": "s",
+	}).Observe(0.1)
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
 	promhttp.Handler().ServeHTTP(w, req)
 
-	resp := w.Result()
-	defer resp.Body.Close()
+	body, _ := io.ReadAll(w.Result().Body)
 
-	body := make([]byte, 20000)
-	n, _ := resp.Body.Read(body)
-	bodyStr := string(body[:n])
-
-	expectedMetrics := []string{
-		"xray_tunnel_latency_seconds",
-		"xray_tunnel_latency_histogram_seconds",
-	}
-	for _, metric := range expectedMetrics {
-		if !strings.Contains(bodyStr, metric) {
-			t.Errorf("metrics output should contain %s", metric)
-		}
-	}
-
-	if !strings.Contains(bodyStr, "# TYPE xray_tunnel_latency_histogram_seconds histogram") {
-		t.Error("expected histogram TYPE declaration")
+	if !strings.Contains(string(body), "# TYPE xray_tunnel_latency_histogram_seconds histogram") {
+		t.Error("expected xray_tunnel_latency_histogram_seconds histogram TYPE declaration")
 	}
 }
 

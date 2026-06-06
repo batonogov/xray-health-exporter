@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -45,6 +46,8 @@ const (
 	defaultSocksPort     = 1080
 	defaultCheckInterval = 30 * time.Second
 	defaultConfigFile    = "/app/config.yaml"
+	defaultMaxBackoff    = 5 * time.Minute
+	defaultBackoffMult   = 2.0
 	socksDialTimeout     = 5 * time.Second
 	socksStartupTimeout  = 10 * time.Second
 )
@@ -268,9 +271,11 @@ type Config struct {
 }
 
 type Defaults struct {
-	CheckURL      string `yaml:"check_url"`
-	CheckInterval string `yaml:"check_interval"`
-	CheckTimeout  string `yaml:"check_timeout"`
+	CheckURL          string   `yaml:"check_url"`
+	CheckInterval     string   `yaml:"check_interval"`
+	CheckTimeout      string   `yaml:"check_timeout"`
+	MaxBackoff        string   `yaml:"max_backoff"`
+	BackoffMultiplier *float64 `yaml:"backoff_multiplier"`
 }
 
 type Subscription struct {
@@ -279,13 +284,15 @@ type Subscription struct {
 }
 
 type Tunnel struct {
-	Name           string `yaml:"name"`
-	URL            string `yaml:"url"`
-	XrayConfigFile string `yaml:"xray_config_file"`
-	CheckURL       string `yaml:"check_url"`
-	CheckInterval  string `yaml:"check_interval"`
-	CheckTimeout   string `yaml:"check_timeout"`
-	SocksPort      int    `yaml:"socks_port"`
+	Name              string   `yaml:"name"`
+	URL               string   `yaml:"url"`
+	XrayConfigFile    string   `yaml:"xray_config_file"`
+	CheckURL          string   `yaml:"check_url"`
+	CheckInterval     string   `yaml:"check_interval"`
+	CheckTimeout      string   `yaml:"check_timeout"`
+	SocksPort         int      `yaml:"socks_port"`
+	MaxBackoff        string   `yaml:"max_backoff"`
+	BackoffMultiplier *float64 `yaml:"backoff_multiplier"`
 }
 
 type VLESSConfig struct {
@@ -316,15 +323,17 @@ type MetricLabels struct {
 }
 
 type TunnelInstance struct {
-	Name          string
-	VLESSConfig   *VLESSConfig // nil for xray_config_file tunnels
-	MetricLabels  MetricLabels
-	XrayInstance  *core.Instance
-	SocksPort     int
-	CheckURL      string
-	CheckInterval time.Duration
-	CheckTimeout  time.Duration
-	cancelFunc    context.CancelFunc
+	Name              string
+	VLESSConfig       *VLESSConfig // nil for xray_config_file tunnels
+	MetricLabels      MetricLabels
+	XrayInstance      *core.Instance
+	SocksPort         int
+	CheckURL          string
+	CheckInterval     time.Duration
+	CheckTimeout      time.Duration
+	MaxBackoff        time.Duration
+	BackoffMultiplier float64
+	cancelFunc        context.CancelFunc
 }
 
 // TunnelManager manages tunnel instances with thread-safe access
@@ -359,6 +368,12 @@ func applyTunnelDefaults(tunnel *Tunnel, defaults Defaults) {
 	if tunnel.CheckTimeout == "" {
 		tunnel.CheckTimeout = defaults.CheckTimeout
 	}
+	if tunnel.MaxBackoff == "" {
+		tunnel.MaxBackoff = defaults.MaxBackoff
+	}
+	if tunnel.BackoffMultiplier == nil {
+		tunnel.BackoffMultiplier = defaults.BackoffMultiplier
+	}
 	if tunnel.CheckURL == "" {
 		tunnel.CheckURL = defaultCheckURL
 	}
@@ -367,6 +382,13 @@ func applyTunnelDefaults(tunnel *Tunnel, defaults Defaults) {
 	}
 	if tunnel.CheckTimeout == "" {
 		tunnel.CheckTimeout = defaultTimeout.String()
+	}
+	if tunnel.MaxBackoff == "" {
+		tunnel.MaxBackoff = defaultMaxBackoff.String()
+	}
+	if tunnel.BackoffMultiplier == nil {
+		m := defaultBackoffMult
+		tunnel.BackoffMultiplier = &m
 	}
 }
 
@@ -820,6 +842,23 @@ func initTunnel(tunnel *Tunnel, socksPort int) (*TunnelInstance, error) {
 		return nil, fmt.Errorf("invalid check_timeout: %v", err)
 	}
 
+	maxBackoffStr := tunnel.MaxBackoff
+	if maxBackoffStr == "" {
+		maxBackoffStr = defaultMaxBackoff.String()
+	}
+	maxBackoff, err := time.ParseDuration(maxBackoffStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid max_backoff: %v", err)
+	}
+
+	backoffMultiplier := defaultBackoffMult
+	if tunnel.BackoffMultiplier != nil {
+		backoffMultiplier = *tunnel.BackoffMultiplier
+	}
+	if backoffMultiplier < 1.0 {
+		return nil, fmt.Errorf("backoff_multiplier must be >= 1.0, got %v", backoffMultiplier)
+	}
+
 	var xrayConfigJSON []byte
 	var vlessConfig *VLESSConfig
 	var metricLabels MetricLabels
@@ -866,14 +905,16 @@ func initTunnel(tunnel *Tunnel, socksPort int) (*TunnelInstance, error) {
 	}
 
 	return &TunnelInstance{
-		Name:          name,
-		VLESSConfig:   vlessConfig,
-		MetricLabels:  metricLabels,
-		XrayInstance:  xrayInstance,
-		SocksPort:     socksPort,
-		CheckURL:      tunnel.CheckURL,
-		CheckInterval: checkInterval,
-		CheckTimeout:  checkTimeout,
+		Name:              name,
+		VLESSConfig:       vlessConfig,
+		MetricLabels:      metricLabels,
+		XrayInstance:      xrayInstance,
+		SocksPort:         socksPort,
+		CheckURL:          tunnel.CheckURL,
+		CheckInterval:     checkInterval,
+		CheckTimeout:      checkTimeout,
+		MaxBackoff:        maxBackoff,
+		BackoffMultiplier: backoffMultiplier,
 	}, nil
 }
 
@@ -1150,6 +1191,7 @@ func runTunnelChecker(ctx context.Context, ti *TunnelInstance, checker HealthChe
 		return
 	}
 
+	consecutiveFailures := 0
 	checkAndRecord(ti, checker, metrics)
 
 	ticker := time.NewTicker(ti.CheckInterval)
@@ -1160,9 +1202,46 @@ func runTunnelChecker(ctx context.Context, ti *TunnelInstance, checker HealthChe
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			checkAndRecord(ti, checker, metrics)
+			if consecutiveFailures > 0 {
+				interval := backoffDuration(ti.CheckInterval, ti.BackoffMultiplier, ti.MaxBackoff, consecutiveFailures)
+				slog.Debug("backoff active", "tunnel", ti.Name, "consecutive_failures", consecutiveFailures, "next_check_in", interval)
+				ticker.Reset(interval)
+			}
+
+			result := checker.Check(ti)
+			if result.Up {
+				if result.Err != nil {
+					slog.Warn("failed to read response body", "tunnel", ti.Name, "error", result.Err)
+				}
+				slog.Info("tunnel UP", "tunnel", ti.Name, "latency", result.Latency.Round(time.Millisecond))
+				consecutiveFailures = 0
+				ticker.Reset(ti.CheckInterval)
+			} else {
+				if result.Err != nil {
+					slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", result.Err)
+				}
+				consecutiveFailures++
+			}
+
+			metrics.Update(ti.Name, ti.MetricLabels, result)
 		}
 	}
+}
+
+// backoffDuration calculates the next check interval using exponential backoff.
+func backoffDuration(base time.Duration, multiplier float64, maxBackoff time.Duration, failures int) time.Duration {
+	d := float64(base) * math.Pow(multiplier, float64(failures))
+	if d > float64(maxBackoff) {
+		return maxBackoff
+	}
+	result := time.Duration(d)
+	if result > maxBackoff {
+		return maxBackoff
+	}
+	if result < base {
+		return base
+	}
+	return result
 }
 
 // waitForSOCKSPort polls the SOCKS port until it accepts connections or the timeout expires.

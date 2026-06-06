@@ -179,6 +179,87 @@ func init() {
 	prometheus.MustRegister(exporterBuildInfo)
 }
 
+// Interfaces for testability.
+
+// HealthChecker performs a single health-check on a tunnel instance and
+// records the result through the returned CheckResult.
+type HealthChecker interface {
+	Check(ti *TunnelInstance) CheckResult
+}
+
+// CheckResult holds the outcome of a single health-check.
+//
+// Contract:
+//   - Up==true  => tunnel is reachable and returned an acceptable HTTP status.
+//     Err may still be non-nil when the response body could not be
+//     fully read (partial success). Callers should check Up first
+//     and use Err for supplementary diagnostics only.
+//   - Up==false => tunnel is down; Err describes the reason.
+type CheckResult struct {
+	Up         bool
+	Latency    time.Duration
+	HTTPStatus int
+	Err        error
+}
+
+// MetricsUpdater records health-check results as Prometheus metrics.
+type MetricsUpdater interface {
+	Update(name string, labels MetricLabels, result CheckResult)
+	Cleanup(oldInstances, newInstances []*TunnelInstance)
+}
+
+// prometheusMetrics is the production MetricsUpdater backed by the global
+// Prometheus gauge/counter vectors declared above.
+type prometheusMetrics struct{}
+
+func (prometheusMetrics) Update(name string, ml MetricLabels, r CheckResult) {
+	labels := prometheus.Labels{
+		"name":     name,
+		"server":   ml.Server,
+		"security": ml.Security,
+		"sni":      ml.SNI,
+	}
+
+	resultLabels := func(result string) prometheus.Labels {
+		return prometheus.Labels{
+			"name":     name,
+			"server":   ml.Server,
+			"security": ml.Security,
+			"sni":      ml.SNI,
+			"result":   result,
+		}
+	}
+
+	if r.Up {
+		tunnelUp.With(labels).Set(1)
+		if r.Err == nil {
+			tunnelLatency.With(labels).Set(r.Latency.Seconds())
+			tunnelLatencyHistogram.With(labels).Observe(r.Latency.Seconds())
+		}
+		tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
+		tunnelCheckTotal.With(resultLabels("success")).Inc()
+	} else {
+		tunnelUp.With(labels).Set(0)
+		tunnelCheckTotal.With(resultLabels("failure")).Inc()
+	}
+
+	if r.HTTPStatus > 0 {
+		tunnelHTTPStatus.With(labels).Set(float64(r.HTTPStatus))
+	}
+}
+
+func (prometheusMetrics) Cleanup(oldInstances, newInstances []*TunnelInstance) {
+	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
+}
+
+// defaultChecker is the production HealthChecker that performs real SOCKS5
+// HTTP health-checks.
+type defaultChecker struct{}
+
+func (defaultChecker) Check(ti *TunnelInstance) CheckResult {
+	return performCheck(ti)
+}
+
 // Config structures
 type Config struct {
 	Defaults      Defaults       `yaml:"defaults"`
@@ -252,6 +333,20 @@ type TunnelManager struct {
 	instances     []*TunnelInstance
 	nextSocksPort int
 	config        *Config
+	checker       HealthChecker
+	metrics       MetricsUpdater
+}
+
+// NewTunnelManager creates a TunnelManager with the given dependencies.
+// Nil checker/metrics are replaced with production defaults.
+func NewTunnelManager(checker HealthChecker, metrics MetricsUpdater) *TunnelManager {
+	if checker == nil {
+		checker = defaultChecker{}
+	}
+	if metrics == nil {
+		metrics = prometheusMetrics{}
+	}
+	return &TunnelManager{checker: checker, metrics: metrics}
 }
 
 func applyTunnelDefaults(tunnel *Tunnel, defaults Defaults) {
@@ -952,47 +1047,23 @@ func classifyError(err error) string {
 	return "unknown"
 }
 
-func checkTunnel(ti *TunnelInstance) {
+// performCheck performs a single health-check on a tunnel instance and returns
+// a CheckResult. It does NOT update Prometheus metrics or log results — that
+// is the caller's responsibility (see checkAndRecord).
+//
+// The CheckResult contract:
+//   - Up==true  => tunnel is reachable with an acceptable HTTP status.
+//     Err may be non-nil when the body could not be fully read (partial success).
+//   - Up==false => tunnel is down; Err describes the reason.
+func performCheck(ti *TunnelInstance) CheckResult {
 	start := time.Now()
-
-	// Labels для метрик
-	labels := prometheus.Labels{
-		"name":     ti.Name,
-		"server":   ti.MetricLabels.Server,
-		"security": ti.MetricLabels.Security,
-		"sni":      ti.MetricLabels.SNI,
-	}
-
-	resultLabels := func(result string) prometheus.Labels {
-		return prometheus.Labels{
-			"name":     ti.Name,
-			"server":   ti.MetricLabels.Server,
-			"security": ti.MetricLabels.Security,
-			"sni":      ti.MetricLabels.SNI,
-			"result":   result,
-		}
-	}
-
-	errorLabels := func(reason string) prometheus.Labels {
-		return prometheus.Labels{
-			"name":     ti.Name,
-			"server":   ti.MetricLabels.Server,
-			"security": ti.MetricLabels.Security,
-			"sni":      ti.MetricLabels.SNI,
-			"reason":   reason,
-		}
-	}
 
 	socksProxy := fmt.Sprintf("127.0.0.1:%d", ti.SocksPort)
 
-	// Сначала проверим что SOCKS5 прокси вообще работает
+	// Check that the SOCKS5 proxy port is reachable
 	conn, err := net.DialTimeout("tcp", socksProxy, min(socksDialTimeout, ti.CheckTimeout))
 	if err != nil {
-		slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", err)
-		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(resultLabels("failure")).Inc()
-		tunnelErrorTotal.With(errorLabels(classifyError(err))).Inc()
-		return
+		return CheckResult{Up: false, Err: err}
 	}
 	conn.Close()
 
@@ -1011,47 +1082,63 @@ func checkTunnel(ti *TunnelInstance) {
 
 	resp, err := client.Get(ti.CheckURL)
 	if err != nil {
-		slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", err)
-		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(resultLabels("failure")).Inc()
-		tunnelErrorTotal.With(errorLabels(classifyError(err))).Inc()
-		return
+		return CheckResult{Up: false, Err: err}
 	}
 	defer resp.Body.Close()
 
-	// Сохраняем HTTP статус
-	tunnelHTTPStatus.With(labels).Set(float64(resp.StatusCode))
-
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusTemporaryRedirect {
-		slog.Error("tunnel DOWN", "tunnel", ti.Name, "status_code", resp.StatusCode)
-		tunnelUp.With(labels).Set(0)
-		tunnelCheckTotal.With(resultLabels("failure")).Inc()
-		tunnelErrorTotal.With(errorLabels("bad_status")).Inc()
-		return
+		return CheckResult{
+			Up:         false,
+			HTTPStatus: resp.StatusCode,
+			Err:        fmt.Errorf("bad status code: %d", resp.StatusCode),
+		}
 	}
 
-	// Читаем немного тела ответа чтобы убедиться что соединение работает.
-	// Полный drain не нужен: транспорт использует DisableKeepAlives: true,
-	// поэтому соединение не переиспользуется и будет закрыто вместе с resp.Body.
+	// Read a small portion of the body to verify the connection is fully working.
 	_, bodyErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-	if bodyErr != nil {
-		slog.Warn("failed to read response body", "tunnel", ti.Name, "error", bodyErr)
-	}
 
 	duration := time.Since(start)
-	slog.Info("tunnel UP", "tunnel", ti.Name, "latency", duration.Round(time.Millisecond))
-	tunnelUp.With(labels).Set(1)
-	// Latency обновляем только при успешном чтении body,
-	// иначе замер duration может быть неточным.
-	if bodyErr == nil {
-		tunnelLatency.With(labels).Set(duration.Seconds())
-		tunnelLatencyHistogram.With(labels).Observe(duration.Seconds())
+	return CheckResult{
+		Up:         true,
+		Latency:    duration,
+		HTTPStatus: resp.StatusCode,
+		Err:        bodyErr,
 	}
-	tunnelLastSuccess.With(labels).Set(float64(time.Now().Unix()))
-	tunnelCheckTotal.With(resultLabels("success")).Inc()
 }
 
-func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
+// checkAndRecord performs a single health-check through the given checker and
+// records the result via metrics, with appropriate logging.
+func checkAndRecord(ti *TunnelInstance, checker HealthChecker, metrics MetricsUpdater) {
+	result := checker.Check(ti)
+
+	// Update the tunnelErrorTotal metric for failures (kept separate from
+	// MetricsUpdater so the error categorization logic stays in one place).
+	if !result.Up && result.Err != nil {
+		errorLabels := prometheus.Labels{
+			"name":     ti.Name,
+			"server":   ti.MetricLabels.Server,
+			"security": ti.MetricLabels.Security,
+			"sni":      ti.MetricLabels.SNI,
+			"reason":   classifyError(result.Err),
+		}
+		tunnelErrorTotal.With(errorLabels).Inc()
+	}
+
+	if result.Up {
+		if result.Err != nil {
+			slog.Warn("failed to read response body", "tunnel", ti.Name, "error", result.Err)
+		}
+		slog.Info("tunnel UP", "tunnel", ti.Name, "latency", result.Latency.Round(time.Millisecond))
+	} else {
+		if result.Err != nil {
+			slog.Error("tunnel DOWN", "tunnel", ti.Name, "error", result.Err)
+		}
+	}
+
+	metrics.Update(ti.Name, ti.MetricLabels, result)
+}
+
+func runTunnelChecker(ctx context.Context, ti *TunnelInstance, checker HealthChecker, metrics MetricsUpdater) {
 	// Jitter на первую проверку — защита от thundering herd
 	jitter := time.Duration(rand.Int64N(int64(ti.CheckInterval)))
 	slog.Debug("staggering initial check", "tunnel", ti.Name, "jitter", jitter)
@@ -1063,7 +1150,7 @@ func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
 		return
 	}
 
-	checkTunnel(ti)
+	checkAndRecord(ti, checker, metrics)
 
 	ticker := time.NewTicker(ti.CheckInterval)
 	defer ticker.Stop()
@@ -1073,7 +1160,7 @@ func runTunnelChecker(ctx context.Context, ti *TunnelInstance) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			checkTunnel(ti)
+			checkAndRecord(ti, checker, metrics)
 		}
 	}
 }
@@ -1161,7 +1248,7 @@ func validateTunnels(config *Config) error {
 
 // initializeTunnels creates and starts all tunnel instances from config.
 // Returns the instances and the next available auto-port (past all assigned auto-ports).
-func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, int, error) {
+func initializeTunnels(config *Config, baseSocksPort int, checker HealthChecker, metrics MetricsUpdater) ([]*TunnelInstance, int, error) {
 	if len(config.Tunnels) == 0 {
 		return nil, baseSocksPort, fmt.Errorf("no tunnels to initialize")
 	}
@@ -1224,7 +1311,7 @@ func initializeTunnels(config *Config, baseSocksPort int) ([]*TunnelInstance, in
 	for _, ti := range tunnelInstances {
 		ctx, cancel := context.WithCancel(context.Background())
 		ti.cancelFunc = cancel
-		go runTunnelChecker(ctx, ti)
+		go runTunnelChecker(ctx, ti, checker, metrics)
 	}
 
 	return tunnelInstances, nextAutoPort, nil
@@ -1321,7 +1408,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	newBasePort := tm.nextSocksPort
 	tm.mu.RUnlock()
 
-	newInstances, nextAutoPort, err := initializeTunnels(newConfig, newBasePort)
+	newInstances, nextAutoPort, err := initializeTunnels(newConfig, newBasePort, tm.checker, tm.metrics)
 	if err != nil {
 		slog.Error("failed to start new tunnels, keeping current", "error", err)
 		exporterConfigReloadErrorsTotal.Inc()
@@ -1337,7 +1424,7 @@ func (tm *TunnelManager) reloadConfig(configFile string) error {
 	tm.mu.Unlock()
 
 	stopTunnels(oldInstances)
-	cleanupRemovedTunnelMetrics(oldInstances, newInstances)
+	tm.metrics.Cleanup(oldInstances, newInstances)
 
 	exporterTunnelsConfigured.Set(float64(len(newInstances)))
 
@@ -1595,9 +1682,9 @@ func runProbing(ctx context.Context, configFile string) error {
 
 	slog.Debug("loaded config", "tunnel_count", len(config.Tunnels))
 
-	tunnelManager := &TunnelManager{nextSocksPort: defaultSocksPort}
+	tunnelManager := NewTunnelManager(nil, nil)
 
-	tunnelInstances, nextAutoPort, err := initializeTunnels(config, defaultSocksPort)
+	tunnelInstances, nextAutoPort, err := initializeTunnels(config, defaultSocksPort, tunnelManager.checker, tunnelManager.metrics)
 	if err != nil {
 		return fmt.Errorf("failed to initialize tunnels: %v", err)
 	}
@@ -1634,7 +1721,7 @@ func runProbing(ctx context.Context, configFile string) error {
 	tunnelManager.mu.Unlock()
 
 	stopTunnels(finalInstances)
-	cleanupRemovedTunnelMetrics(finalInstances, nil)
+	tunnelManager.metrics.Cleanup(finalInstances, nil)
 	exporterTunnelsConfigured.Set(0)
 
 	wg.Wait()

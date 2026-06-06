@@ -56,10 +56,9 @@ func TestExporterInternalMetrics_ReloadCounters(t *testing.T) {
 	invalidConfig := "tunnels:\n  - name: \"bad\"\n    url: \"vless://bad-url-no-port\"\n    check_interval: \"30s\"\n    check_timeout: \"10s\""
 	os.WriteFile(configFile, []byte(invalidConfig), 0644)
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{},
-		nextSocksPort: defaultSocksPort,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{}
+	tm.nextSocksPort = defaultSocksPort
 
 	err := tm.reloadConfig(configFile)
 	if err == nil {
@@ -87,10 +86,9 @@ func TestExporterInternalMetrics_TunnelsConfigured(t *testing.T) {
 	config := fmt.Sprintf("tunnels:\n  - name: \"test-xray\"\n    xray_config_file: %q\n    check_url: \"https://example.com\"\n    check_interval: \"30s\"\n    check_timeout: \"10s\"", xrayConfigPath)
 	os.WriteFile(configFile, []byte(config), 0644)
 
-	tm := &TunnelManager{
-		instances:     []*TunnelInstance{},
-		nextSocksPort: defaultSocksPort,
-	}
+	tm := NewTunnelManager(nil, nil)
+	tm.instances = []*TunnelInstance{}
+	tm.nextSocksPort = defaultSocksPort
 
 	err := tm.reloadConfig(configFile)
 	if err != nil {

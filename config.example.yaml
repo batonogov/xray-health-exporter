@@ -28,8 +28,13 @@ tunnels:
   - url: "vless://your-uuid@example4.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome"
     check_url: "https://1.1.1.1"
 
+  # Туннель с кастомным SOCKS портом (опционально, по умолчанию — автоназначение)
+  - name: "Server 5"
+    url: "vless://your-uuid@example5.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome"
+    socks_port: 2080
+
 # Примечания:
 # - Требуется как минимум один туннель
 # - Каждый туннель должен иметь валидный VLESS URL
-# - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082, ...)
+# - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082, ...), или можно задать явно через socks_port
 # - Формат duration: "30s", "1m", "1h30m" и т.д.

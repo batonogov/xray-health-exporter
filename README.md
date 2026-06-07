@@ -146,6 +146,11 @@ tunnels:
     check_url: "https://1.1.1.1"
     check_interval: "60s"
     check_timeout: "45s"
+
+  # With a custom SOCKS port (optional, auto-assigned by default)
+  - name: "Server 3"
+    url: "vless://uuid@host:443?..."
+    socks_port: 2080
 ```
 
 **Tunnel parameters:**
@@ -155,6 +160,7 @@ tunnels:
 - `check_url` (optional) - URL for availability checks
 - `check_interval` (optional) - interval between checks
 - `check_timeout` (optional) - check timeout
+- `socks_port` (optional) - custom SOCKS5 port for this tunnel. Must be in range 1-65535. Duplicate ports across tunnels are not allowed. If not specified, ports are auto-assigned starting from 1080
 
 **Subscription parameters:**
 - `url` (required) - subscription URL (returns a base64-encoded or plain text server list)
@@ -162,7 +168,7 @@ tunnels:
 
 **Notes:**
 - At least one tunnel or subscription must be specified
-- SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...)
+- SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
 - Duration format: "30s", "1m", "1h30m"
 - If a parameter is not specified for a tunnel, the value from `defaults` is used
 - If not specified in `defaults`, the global default value is used

@@ -5670,6 +5670,7 @@ func TestMetricsEndpoint_IncludesHistogram(t *testing.T) {
 // Benchmarks
 
 func BenchmarkParseVLESSURL(b *testing.B) {
+	b.ReportAllocs()
 	urls := []string{
 		"vless://uuid-123@example.com:443?type=tcp&security=reality&pbk=test-key&sni=google.com&sid=short123&spx=/&fp=chrome",
 		"vless://uuid-456@server.net:8443?type=ws&security=tls&sni=server.net&fp=firefox&host=server.net&path=%2Fws",
@@ -5686,6 +5687,7 @@ func BenchmarkParseVLESSURL(b *testing.B) {
 }
 
 func BenchmarkCreateXrayConfig(b *testing.B) {
+	b.ReportAllocs()
 	configs := []*VLESSConfig{
 		{UUID: "test-uuid-1", Address: "example.com", Port: 443, Type: "tcp", Security: "reality", PBK: "test-key", SNI: "google.com", SID: "short123", SPX: "/", FP: "chrome"},
 		{UUID: "test-uuid-2", Address: "server.net", Port: 8443, Type: "ws", Security: "tls", SNI: "server.net", FP: "firefox", Host: "server.net", Path: "/ws"},
@@ -5700,7 +5702,83 @@ func BenchmarkCreateXrayConfig(b *testing.B) {
 	}
 }
 
+func BenchmarkCheckTunnel(b *testing.B) {
+	b.ReportAllocs()
+
+	// Mock HTTP server
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+	defer ts.Close()
+
+	// Mock SOCKS5 server
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("failed to create SOCKS listener: %v", err)
+	}
+	defer socksListener.Close()
+
+	go func() {
+		for {
+			conn, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				c.Read(buf)
+				c.Write([]byte{5, 0})
+
+				req := make([]byte, 4)
+				c.Read(req)
+				switch req[3] {
+				case 1:
+					c.Read(make([]byte, 4+2))
+				case 3:
+					lenBuf := make([]byte, 1)
+					c.Read(lenBuf)
+					c.Read(make([]byte, int(lenBuf[0])+2))
+				case 4:
+					c.Read(make([]byte, 16+2))
+				}
+
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+				httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+				c.Write([]byte(httpResponse))
+			}(conn)
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(socksListener.Addr().String())
+	socksPort := 0
+	fmt.Sscanf(portStr, "%d", &socksPort)
+
+	ti := &TunnelInstance{
+		Name: "bench-tunnel",
+		MetricLabels: MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      ts.URL,
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	// Wait for SOCKS server to be ready
+	time.Sleep(100 * time.Millisecond)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		checkAndRecord(ti, defaultChecker{}, prometheusMetrics{})
+	}
+}
+
 func BenchmarkMetricsUpdate(b *testing.B) {
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		labels := prometheus.Labels{
@@ -5721,5 +5799,36 @@ func BenchmarkMetricsUpdate(b *testing.B) {
 			"result":   "success",
 		}
 		tunnelCheckTotal.With(resultLabels).Inc()
+	}
+}
+
+func BenchmarkLoadConfig(b *testing.B) {
+	b.ReportAllocs()
+
+	yamlContent := `defaults:
+  check_url: "https://example.com"
+  check_interval: "1m"
+  check_timeout: "10s"
+tunnels:
+  - name: "bench-tunnel-1"
+    url: "vless://uuid@example.com:443?type=tcp&security=reality&pbk=key&sni=test.com&fp=chrome"
+  - name: "bench-tunnel-2"
+    url: "vless://uuid2@example2.com:8443?type=ws&security=tls&sni=test2.com&fp=firefox&host=test2.com&path=%2Fws"
+  - name: "bench-tunnel-3"
+    url: "vless://uuid3@grpc.example.com:443/?type=grpc&serviceName=grpc-service&security=reality&pbk=key2&fp=chrome&sni=grpc.example.com&sid=ab12cd34"
+`
+
+	tmpDir := b.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configFile, []byte(yamlContent), 0644); err != nil {
+		b.Fatalf("failed to write temp config: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := loadConfig(configFile)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }

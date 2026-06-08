@@ -58,6 +58,10 @@ CI требует покрытие ≥ 75%.
 
 `CONFIG_FILE` (default `/app/config.yaml`), `LISTEN_ADDR` (`:9273`), `LOG_FORMAT` (`text`), `LOG_LEVEL` (`info`), `XRAY_LOG_LEVEL` (`warning`), `DEBUG` (`false`, deprecated — use `LOG_LEVEL=debug`).
 
+## Не коммитить
+
+`docs/superpowers/` — это артефакты superpowers-скиллов, не относятся к проекту. Директория в `.gitignore`, но если файлы уже отслеживаются git — не добавлять в коммиты.
+
 ## Релизы
 
 Автоматизированы через release-please (`release-please-config.json`, см. коммит 4de0159). Используется tag-based SemVer — версии формируются из conventional commits. В `task build` версия прокидывается через `-ldflags="-X main.Version=..."`.

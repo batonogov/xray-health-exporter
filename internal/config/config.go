@@ -18,6 +18,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Default application-level configuration values.
+const (
+	DefaultConfigFile = "/app/config.yaml"
+	DefaultListenAddr = ":9273"
+)
+
 // Config is the top-level configuration structure.
 type Config struct {
 	Defaults      Defaults       `yaml:"defaults"`

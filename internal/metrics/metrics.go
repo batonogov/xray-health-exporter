@@ -15,12 +15,10 @@ import (
 
 // Default configuration values.
 const (
-	DefaultListenAddr    = ":9273"
 	DefaultCheckURL      = "https://www.google.com"
 	DefaultTimeout       = 30 * time.Second
 	DefaultSocksPort     = 1080
 	DefaultCheckInterval = 30 * time.Second
-	DefaultConfigFile    = "/app/config.yaml"
 	DefaultMaxBackoff    = 5 * time.Minute
 	DefaultBackoffMult   = 2.0
 	SocksDialTimeout     = 5 * time.Second

@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/batonogov/xray-health-exporter/internal/checker"
+	"github.com/batonogov/xray-health-exporter/internal/config"
 	"github.com/batonogov/xray-health-exporter/internal/leaderelection"
 	"github.com/batonogov/xray-health-exporter/internal/metrics"
 	"github.com/batonogov/xray-health-exporter/internal/tunnel"
@@ -77,12 +78,12 @@ func main() {
 
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile == "" {
-		configFile = metrics.DefaultConfigFile
+		configFile = config.DefaultConfigFile
 	}
 
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
-		listenAddr = metrics.DefaultListenAddr
+		listenAddr = config.DefaultListenAddr
 	}
 
 	lec, err := leaderelection.ReadLeaderElectionConfig()

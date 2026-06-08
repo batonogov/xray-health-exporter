@@ -4,7 +4,7 @@ tasks:
   build:
     desc: Собрать бинарный файл
     cmds:
-      - go build -ldflags="-X main.Version=dev -X main.Commit=dev" -o xray-health-exporter .
+      - go build -ldflags="-X main.Version=dev -X main.Commit=dev" -o xray-health-exporter ./cmd/exporter
 
   test:
     desc: Запустить тесты
@@ -34,7 +34,7 @@ tasks:
     desc: Запустить тесты как в CI (с покрытием и race detector)
     cmds:
       - go fmt ./...
-      - go build -v -o xray-health-exporter .
+      - go build -v -o xray-health-exporter ./cmd/exporter
       - go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
       - go tool cover -func=coverage.out | tail -1
       - echo "✅ Все проверки CI пройдены!"
@@ -73,7 +73,7 @@ tasks:
   run:
     desc: Запустить приложение
     cmds:
-      - go run .
+      - go run ./cmd/exporter
 
   docker-build:
     desc: Собрать Docker образ

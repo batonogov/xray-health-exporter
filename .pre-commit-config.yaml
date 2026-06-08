@@ -34,6 +34,6 @@ repos:
       - id: go-build
         name: go build
         entry: go build
-        args: ['-o', '/dev/null', '.']
+        args: ['-o', '/dev/null', './cmd/exporter']
         language: system
         pass_filenames: false

@@ -58,7 +58,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           go build -ldflags="-s -w -X main.Version=${{ needs.version.outputs.version }} -X main.Commit=${{ github.sha }}" \
-            -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} .
+            -o xray-health-exporter-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/exporter
 
       - name: Загрузка артефакта
         uses: actions/upload-artifact@v7

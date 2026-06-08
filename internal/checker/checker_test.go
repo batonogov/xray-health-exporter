@@ -20,6 +20,8 @@ func TestCheckTunnel(t *testing.T) {
 
 	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
 		httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
 		c.Write([]byte(httpResponse))
 	})
@@ -102,6 +104,8 @@ func TestCheckTunnel_BadStatusCodes(t *testing.T) {
 
 			socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+				buf := make([]byte, 4096)
+				c.Read(buf)
 				httpResponse := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: 13\r\n\r\ntest response",
 					tc.statusCode, http.StatusText(tc.statusCode))
 				c.Write([]byte(httpResponse))
@@ -213,6 +217,8 @@ func TestCheckTunnel_SOCKSNotReachable(t *testing.T) {
 func TestCheckTunnel_BodyReadError(t *testing.T) {
 	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
 		httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\nsmall"
 		c.Write([]byte(httpResponse))
 	})
@@ -242,6 +248,8 @@ func TestCheckTunnel_BodyReadError(t *testing.T) {
 func TestCheckTunnel_BodyReadSuccess(t *testing.T) {
 	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
 		httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
 		c.Write([]byte(httpResponse))
 		time.Sleep(200 * time.Millisecond)

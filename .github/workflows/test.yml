@@ -45,7 +45,7 @@ jobs:
       - name: 🏗️ Проверка сборки
         run: |
           echo "🔨 Сборка проекта..."
-          go build -v -o xray-health-exporter .
+          go build -v -o xray-health-exporter ./cmd/exporter
           echo "✅ Сборка прошла успешно"
 
       - name: 🧪 Запуск тестов

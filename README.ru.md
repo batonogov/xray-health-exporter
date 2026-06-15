@@ -94,7 +94,7 @@ export CONFIG_FILE=./config.yaml
 Все метрики содержат labels: `name`, `server`, `security`, `sni`
 
 - `xray_tunnel_up{name, server, security, sni}` - статус туннеля (1=работает, 0=не работает)
-- `xray_tunnel_latency_seconds{name, server, security, sni}` - латентность подключения
+- `xray_tunnel_latency_seconds{name, server, security, sni}` - латентность TTFB (время до первого байта)
 - `xray_tunnel_check_total{name, server, security, sni, result}` - счётчик проверок
 - `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp последней успешной проверки
 - `xray_tunnel_http_status{name, server, security, sni}` - HTTP статус код при проверке

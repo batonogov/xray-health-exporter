@@ -94,7 +94,7 @@ export CONFIG_FILE=./config.yaml
 All metrics contain labels: `name`, `server`, `security`, `sni`
 
 - `xray_tunnel_up{name, server, security, sni}` - tunnel status (1=up, 0=down)
-- `xray_tunnel_latency_seconds{name, server, security, sni}` - connection latency
+- `xray_tunnel_latency_seconds{name, server, security, sni}` - TTFB (time to first byte) latency
 - `xray_tunnel_check_total{name, server, security, sni, result}` - check counter
 - `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp of the last successful check
 - `xray_tunnel_http_status{name, server, security, sni}` - HTTP status code from the check

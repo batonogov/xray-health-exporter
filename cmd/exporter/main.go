@@ -81,6 +81,28 @@ func main() {
 		configFile = config.DefaultConfigFile
 	}
 
+	// RUN_ONCE mode: load config, check every tunnel once, print metrics to
+	// stdout, and exit. No HTTP server, watchers, or leader election.
+	if os.Getenv("RUN_ONCE") == "true" {
+		metrics.SetLeader(true)
+
+		slog.Info("running in run-once mode")
+
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		allUp, err := tunnel.RunOnce(ctx, configFile, checker.DefaultChecker{}, tunnel.NewPrometheusMetrics(), os.Stdout)
+		if err != nil {
+			slog.Error("run-once failed", "error", err)
+			os.Exit(1)
+		}
+
+		if !allUp {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
 		listenAddr = config.DefaultListenAddr

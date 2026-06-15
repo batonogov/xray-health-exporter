@@ -78,13 +78,18 @@ func ParsePushURL(rawURL string) (cleanURL, username, password string, err error
 // amLeader reports whether this instance is currently the leader by reading
 // the xray_exporter_leader gauge from the default Prometheus registry. When
 // leader election is disabled, SetLeader(true) is called at startup so this
-// always returns true.
+// returns true.
+//
+// amLeader fails CLOSED: on a registry Gather error or when the leader gauge
+// is not found, it returns false. In an HA setup (leader election + push),
+// a follower must never become a second producer — dropping a single push on
+// a transient error is far less harmful than pushing duplicate or stale
+// series to the Pushgateway.
 func amLeader() bool {
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
-		// Fail open: assume leader so pushes are not silently dropped on a
-		// registry collection error.
-		return true
+		slog.Warn("leader gauge check failed; skipping push", "error", err)
+		return false
 	}
 	for _, mf := range mfs {
 		if mf.GetName() != "xray_exporter_leader" {
@@ -96,8 +101,8 @@ func amLeader() bool {
 			}
 		}
 	}
-	// Metric not found — fail open.
-	return true
+	// Metric not found — fail closed.
+	return false
 }
 
 // PushMetrics pushes all metrics from gatherer to the Pushgateway described by

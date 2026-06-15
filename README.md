@@ -255,6 +255,8 @@ METRICS_INSTANCE=node-1
 - Push is **complementary** — the `/metrics` HTTP endpoint stays available.
 - Push only happens when this instance is the **leader** (or leader election is disabled).
 - Credentials embedded in the URL (`user:pass@`) are extracted for HTTP Basic Auth automatically.
+- The URL **path is ignored** — `prometheus/push` builds `/metrics/job/xray-health-exporter` itself, so do not include a reverse-proxy path prefix in `METRICS_PUSH_URL`.
+- The **full default registry** is pushed (including `go_*` and `process_*` metrics), not only `xray_tunnel_*` series.
 
 ## High Availability (Kubernetes)
 

@@ -442,3 +442,30 @@ func TestAmLeader(t *testing.T) {
 	// Reset to avoid affecting other tests.
 	SetLeader(false)
 }
+
+// TestAmLeader_FailClosed verifies that amLeader returns false (does not push)
+// when the leader gauge value is not 1. This is the core fail-closed contract:
+// a follower must never become a second producer in an HA setup. The
+// Gather-error and metric-not-found paths also return false (by code
+// inspection), but are hard to unit-test against the global default registry.
+func TestAmLeader_FailClosed(t *testing.T) {
+	// Gauge at 0 (follower) => must NOT be treated as leader.
+	SetLeader(false)
+	result := amLeader()
+	if result {
+		t.Fatalf("amLeader() = true when gauge is 0; expected false (fail-closed: follower must not push)")
+	}
+
+	// Gauge at 1 (leader) => push is allowed.
+	SetLeader(true)
+	if !amLeader() {
+		t.Fatalf("amLeader() = false when gauge is 1; expected true")
+	}
+
+	// Any value other than exactly 1 must be treated as not-leader.
+	// The gauge only holds 0 or 1 in production, but verify the contract.
+	SetLeader(false)
+	if amLeader() {
+		t.Fatalf("amLeader() = true when gauge reset to 0; expected false")
+	}
+}

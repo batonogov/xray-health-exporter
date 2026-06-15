@@ -255,6 +255,8 @@ METRICS_INSTANCE=node-1
 - Push — **дополнение**, HTTP-эндпоинт `/metrics` остаётся доступным.
 - Отправка происходит только когда этот инстанс — **leader** (или leader election отключён).
 - Учётные данные в URL (`user:pass@`) автоматически извлекаются для HTTP Basic Auth.
+- **Путь в URL игнорируется** — `prometheus/push` сам строит `/metrics/job/xray-health-exporter`, поэтому не указывайте префикс reverse-proxy в `METRICS_PUSH_URL`.
+- Отправляется **весь реестр по умолчанию** (включая метрики `go_*` и `process_*`), а не только серии `xray_tunnel_*`.
 
 ## Высокая доступность (Kubernetes)
 

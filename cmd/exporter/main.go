@@ -212,6 +212,10 @@ func main() {
 // minCheckInterval loads the config file and returns the smallest check_interval
 // among all tunnels (after defaults are applied). Returns 0 if the config
 // cannot be loaded or no tunnels are configured.
+//
+// TODO: thread the already-parsed config from RunProbing through to avoid the
+// second LoadConfig call. Currently low priority — LoadConfig is fast and only
+// runs once at startup.
 func minCheckInterval(configFile string) time.Duration {
 	cfg, err := config.LoadConfig(configFile)
 	if err != nil {

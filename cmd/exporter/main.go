@@ -121,8 +121,23 @@ func main() {
 		metrics.SetLeader(true)
 	}
 
+	metricsHandler := promhttp.Handler()
+	if os.Getenv("METRICS_PROTECTED") == "true" {
+		username := os.Getenv("METRICS_USERNAME")
+		if username == "" {
+			username = "metricsUser"
+		}
+		password := os.Getenv("METRICS_PASSWORD")
+		if password == "" {
+			slog.Error("METRICS_PASSWORD is required when METRICS_PROTECTED=true")
+			os.Exit(1)
+		}
+		metricsHandler = basicAuthMiddleware(username, password, metricsHandler)
+		slog.Info("metrics endpoint protected with Basic Auth")
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "OK")

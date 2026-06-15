@@ -1,7 +1,6 @@
 package tunnel
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +20,9 @@ import (
 //
 // It returns allUp=true only if every tunnel check returned Up==true.
 //
+// Checks are individually bounded by each tunnel's CheckTimeout, so no
+// external context is required for cancellation.
+//
 // Unlike RunProbing, this function:
 //   - Does NOT start the HTTP server, config watcher, or subscription watcher.
 //   - Does NOT use RunTunnelChecker (which loops forever).
@@ -28,7 +30,7 @@ import (
 //   - Ignores leader election — run-once is a single-shot local action intended
 //     for CI, scripts, and debugging. It always runs regardless of leader
 //     election configuration.
-func RunOnce(ctx context.Context, configFile string, checker HealthChecker, mu MetricsUpdater, w io.Writer) (bool, error) {
+func RunOnce(configFile string, checker HealthChecker, mu MetricsUpdater, w io.Writer) (bool, error) {
 	cfg, err := config.LoadConfig(configFile)
 	if err != nil {
 		return false, fmt.Errorf("failed to load config: %w", err)

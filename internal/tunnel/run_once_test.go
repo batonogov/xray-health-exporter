@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +67,6 @@ func TestRunOnce_AllUp(t *testing.T) {
 
 	var buf bytes.Buffer
 	allUp, err := RunOnce(
-		context.Background(),
 		configFile,
 		fakeChecker{downTunnels: nil},
 		NewPrometheusMetrics(),
@@ -85,6 +83,9 @@ func TestRunOnce_AllUp(t *testing.T) {
 	if !strings.Contains(output, "xray_tunnel_up") {
 		t.Errorf("expected metrics output to contain 'xray_tunnel_up', got:\n%s", output)
 	}
+	// Assert concrete gauge values per tunnel (both must be 1 = up).
+	assertGaugeValue(t, output, "tunnel-a", "1")
+	assertGaugeValue(t, output, "tunnel-b", "1")
 }
 
 func TestRunOnce_OneDown(t *testing.T) {
@@ -92,7 +93,6 @@ func TestRunOnce_OneDown(t *testing.T) {
 
 	var buf bytes.Buffer
 	allUp, err := RunOnce(
-		context.Background(),
 		configFile,
 		fakeChecker{downTunnels: map[string]bool{"tunnel-b": true}},
 		NewPrometheusMetrics(),
@@ -109,6 +109,9 @@ func TestRunOnce_OneDown(t *testing.T) {
 	if !strings.Contains(output, "xray_tunnel_up") {
 		t.Errorf("expected metrics output to contain 'xray_tunnel_up', got:\n%s", output)
 	}
+	// Assert concrete gauge values: tunnel-a is up (1), tunnel-b is down (0).
+	assertGaugeValue(t, output, "tunnel-a", "1")
+	assertGaugeValue(t, output, "tunnel-b", "0")
 }
 
 func TestRunOnce_InvalidConfig(t *testing.T) {
@@ -116,7 +119,6 @@ func TestRunOnce_InvalidConfig(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "nonexistent.yaml")
 
 	_, err := RunOnce(
-		context.Background(),
 		configPath,
 		fakeChecker{},
 		NewPrometheusMetrics(),
@@ -135,7 +137,6 @@ func TestRunOnce_NoTunnels(t *testing.T) {
 	}
 
 	_, err := RunOnce(
-		context.Background(),
 		configPath,
 		fakeChecker{},
 		NewPrometheusMetrics(),
@@ -156,4 +157,25 @@ func TestEncodeMetrics(t *testing.T) {
 	if !strings.Contains(output, "xray_exporter_") {
 		t.Errorf("expected output to contain exporter metrics, got:\n%s", output)
 	}
+}
+
+// assertGaugeValue checks that the Prometheus text-exposition output contains
+// an xray_tunnel_up line for the given tunnel name with the expected value
+// ("1" for up, "0" for down). It matches the full metric sample line to avoid
+// false positives from HELP/TYPE metadata or unrelated series.
+func assertGaugeValue(t *testing.T, output, name, want string) {
+	t.Helper()
+	// Prometheus text-exposition sample lines look like:
+	//   xray_tunnel_up{name="tunnel-a",server="...",security="...",sni="..."} 1
+	needle := "xray_tunnel_up{name=\"" + name + "\""
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, needle) {
+			if strings.HasSuffix(strings.TrimSpace(line), " "+want) {
+				return
+			}
+			t.Errorf("xray_tunnel_up for %s: expected value %s, got line %q", name, want, line)
+			return
+		}
+	}
+	t.Errorf("expected xray_tunnel_up line for tunnel %q in output, got:\n%s", name, output)
 }

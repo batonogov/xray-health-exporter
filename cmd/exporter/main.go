@@ -60,9 +60,9 @@ func setupLogger() {
 
 	var handler slog.Handler
 	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "json") {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
+		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 
 	slog.SetDefault(slog.New(handler))
@@ -88,10 +88,7 @@ func main() {
 
 		slog.Info("running in run-once mode")
 
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
-
-		allUp, err := tunnel.RunOnce(ctx, configFile, checker.DefaultChecker{}, tunnel.NewPrometheusMetrics(), os.Stdout)
+		allUp, err := tunnel.RunOnce(configFile, checker.DefaultChecker{}, tunnel.NewPrometheusMetrics(), os.Stdout)
 		if err != nil {
 			slog.Error("run-once failed", "error", err)
 			os.Exit(1)

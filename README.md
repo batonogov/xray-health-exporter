@@ -238,6 +238,23 @@ RUN_ONCE=true CONFIG_FILE=./config.yaml go run .
 ```
 
 > **Note:** In run-once mode the HTTP server, config watcher, and subscription watcher are **not** started. Leader election is ignored — the check always runs locally.
+| `METRICS_PUSH_URL` | _(empty)_ | Full Pushgateway URL (e.g. `https://user:pass@pushgateway:9091`). When set, metrics are periodically pushed to Pushgateway in addition to the `/metrics` pull endpoint. Empty disables push (default). |
+| `METRICS_PUSH_INTERVAL` | min `check_interval`, or `30s` | Interval between pushes (Go duration string, e.g. `30s`, `1m`) |
+| `METRICS_INSTANCE` | `os.Hostname()` | Value of the `instance` grouping label for pushed metrics |
+
+### Prometheus Pushgateway
+
+When the exporter runs behind NAT or in a network where Prometheus cannot scrape `/metrics`, you can push metrics to a [Pushgateway](https://github.com/prometheus/pushgateway) instead:
+
+```bash
+METRICS_PUSH_URL=https://user:pass@pushgateway.example.com:9091
+METRICS_PUSH_INTERVAL=30s
+METRICS_INSTANCE=node-1
+```
+
+- Push is **complementary** — the `/metrics` HTTP endpoint stays available.
+- Push only happens when this instance is the **leader** (or leader election is disabled).
+- Credentials embedded in the URL (`user:pass@`) are extracted for HTTP Basic Auth automatically.
 
 ## High Availability (Kubernetes)
 

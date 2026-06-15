@@ -156,6 +156,20 @@ func main() {
 	probeChecker := checker.NewDefaultChecker(realIP)
 	probeMetrics := tunnel.NewPrometheusMetrics()
 
+	// Configure optional Prometheus Pushgateway push. The push loop only runs
+	// when this instance is the leader (checked via the xray_exporter_leader
+	// gauge inside PushLoop), so it is safe to start even with leader election
+	// enabled.
+	pushCfg, err := metrics.ReadPushConfig(minCheckInterval(configFile))
+	if err != nil {
+		slog.Error("invalid push gateway config", "error", err)
+		os.Exit(1)
+	}
+	if pushCfg != nil {
+		slog.Info("push gateway enabled", "url", pushCfg.URL, "interval", pushCfg.Interval, "instance", pushCfg.Instance)
+		go metrics.PushLoop(ctx, *pushCfg)
+	}
+
 	probingDone := make(chan struct{})
 	go func() {
 		defer close(probingDone)
@@ -193,4 +207,25 @@ func main() {
 	case <-time.After(15 * time.Second):
 		slog.Warn("probing did not stop within timeout, exiting anyway", "timeout", "15s")
 	}
+}
+
+// minCheckInterval loads the config file and returns the smallest check_interval
+// among all tunnels (after defaults are applied). Returns 0 if the config
+// cannot be loaded or no tunnels are configured.
+func minCheckInterval(configFile string) time.Duration {
+	cfg, err := config.LoadConfig(configFile)
+	if err != nil {
+		return 0
+	}
+	var min time.Duration
+	for _, t := range cfg.Tunnels {
+		d, parseErr := time.ParseDuration(t.CheckInterval)
+		if parseErr != nil {
+			continue
+		}
+		if min == 0 || d < min {
+			min = d
+		}
+	}
+	return min
 }

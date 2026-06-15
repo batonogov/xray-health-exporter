@@ -62,6 +62,36 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 		return nil, fmt.Errorf("backoff_multiplier must be >= 1.0, got %v", backoffMultiplier)
 	}
 
+	// Check method fields (issue #114).
+	checkMethod := tunnel.CheckMethod
+	if checkMethod == "" {
+		checkMethod = metrics.DefaultCheckMethod
+	}
+
+	ipCheckURL := tunnel.IPCheckURL
+	if ipCheckURL == "" {
+		ipCheckURL = metrics.DefaultIPCheckURL
+	}
+
+	downloadURL := tunnel.DownloadURL
+	if downloadURL == "" {
+		downloadURL = metrics.DefaultDownloadURL
+	}
+
+	downloadTimeoutStr := tunnel.DownloadTimeout
+	if downloadTimeoutStr == "" {
+		downloadTimeoutStr = metrics.DefaultDownloadTimeout.String()
+	}
+	downloadTimeout, err := time.ParseDuration(downloadTimeoutStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid download_timeout: %v", err)
+	}
+
+	downloadMinSize := tunnel.DownloadMinSize
+	if downloadMinSize == 0 {
+		downloadMinSize = metrics.DefaultDownloadMinSize
+	}
+
 	var xrayConfigJSON []byte
 	var vlessConfig *VLESSConfig
 	var metricLabels MetricLabels
@@ -118,6 +148,11 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 		CheckTimeout:      checkTimeout,
 		MaxBackoff:        maxBackoff,
 		BackoffMultiplier: backoffMultiplier,
+		CheckMethod:       checkMethod,
+		IPCheckURL:        ipCheckURL,
+		DownloadURL:       downloadURL,
+		DownloadTimeout:   downloadTimeout,
+		DownloadMinSize:   downloadMinSize,
 	}, nil
 }
 

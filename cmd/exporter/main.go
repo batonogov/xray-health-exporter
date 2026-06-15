@@ -121,7 +121,20 @@ func main() {
 		serverErr <- server.ListenAndServe()
 	}()
 
-	probeChecker := checker.DefaultChecker{}
+	// Resolve the host's real public IP once for ip-method checks.
+	// If this fails, the checker will resolve lazily on first ip check.
+	ipCheckURL := os.Getenv("IP_CHECK_URL")
+	if ipCheckURL == "" {
+		ipCheckURL = metrics.DefaultIPCheckURL
+	}
+	ipResolveCtx, ipResolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	realIP, ipErr := checker.ResolveRealIP(ipResolveCtx, ipCheckURL)
+	ipResolveCancel()
+	if ipErr != nil {
+		slog.Warn("failed to resolve real IP at startup, ip check method will resolve lazily", "error", ipErr)
+	}
+
+	probeChecker := checker.NewDefaultChecker(realIP)
 	probeMetrics := tunnel.NewPrometheusMetrics()
 
 	probingDone := make(chan struct{})

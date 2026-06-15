@@ -160,6 +160,11 @@ tunnels:
 - `check_url` (опционально) - URL для проверки доступности
 - `check_interval` (опционально) - интервал между проверками
 - `check_timeout` (опционально) - таймаут проверки
+- `check_method` (опционально) - метод проверки: `http` (по умолчанию), `ip` или `download` (см. ниже)
+- `ip_check_url` (опционально) - URL сервиса определения IP для метода `ip` (по умолчанию: `https://api.ipify.org?format=text`)
+- `download_url` (опционально) - URL файла для метода `download` (по умолчанию: `https://proof.ovh.net/files/1Mb.dat`)
+- `download_timeout` (опционально) - таймаут для метода `download` (по умолчанию: `60s`)
+- `download_min_size` (опционально) - минимум байт для метода `download` (по умолчанию: `51200`)
 - `socks_port` (опционально) - кастомный SOCKS5 порт для туннеля. Должен быть в диапазоне 1-65535. Дублирование портов между туннелями не допускается. Если не указан, порты назначаются автоматически начиная с 1080
 
 **Параметры подписки:**
@@ -172,6 +177,28 @@ tunnels:
 - Формат duration: "30s", "1m", "1h30m"
 - Если параметр не указан в туннеле, используется значение из `defaults`
 - Если не указан в `defaults`, используется глобальное значение по умолчанию
+
+### Методы проверки
+
+Доступны три метода проверки, настраиваемые для каждого туннеля через `check_method` (или глобально через `defaults.check_method`):
+
+- **`http`** (по умолчанию) - GET-запрос к `check_url` с ожиданием статус-кода 2xx/3xx. Текущее поведение.
+- **`ip`** - GET-запрос к сервису определения IP через прокси, полученный IP сравнивается с реальным публичным IP хоста (определяется один раз при старте). Проверка успешна, если IP через прокси отличается от реального.
+- **`download`** - Скачивание файла через прокси, проверка что получено не менее `download_min_size` байт в течение `download_timeout`.
+
+Все три метода измеряют latency как TTFB (time to first byte).
+
+```yaml
+defaults:
+  check_method: "ip"
+  ip_check_url: "https://api.ipify.org?format=text"
+tunnels:
+  - name: "Server 1"
+    url: "vless://..."
+    check_method: "download"
+    download_url: "https://proof.ovh.net/files/1Mb.dat"
+    download_min_size: 51200
+```
 
 ## Переменные окружения
 
@@ -187,6 +214,11 @@ tunnels:
 | `LEADER_ELECTION_NAMESPACE` | namespace pod-а | Namespace для Lease объекта |
 | `LEADER_ELECTION_NAME` | `xray-health-exporter` | Имя Lease |
 | `LEADER_ELECTION_IDENTITY` | `$HOSTNAME` | Уникальный ID реплики |
+| `CHECK_METHOD` | `http` | Метод проверки по умолчанию: `http`, `ip` или `download` |
+| `IP_CHECK_URL` | `https://api.ipify.org?format=text` | URL сервиса определения IP для метода `ip` |
+| `DOWNLOAD_URL` | `https://proof.ovh.net/files/1Mb.dat` | URL файла для метода `download` |
+| `DOWNLOAD_TIMEOUT` | `60s` | Таймаут для метода `download` |
+| `DOWNLOAD_MIN_SIZE` | `51200` | Минимум байт для метода `download` |
 
 ## Высокая доступность (Kubernetes)
 

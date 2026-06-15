@@ -160,6 +160,11 @@ tunnels:
 - `check_url` (optional) - URL for availability checks
 - `check_interval` (optional) - interval between checks
 - `check_timeout` (optional) - check timeout
+- `check_method` (optional) - health-check method: `http` (default), `ip`, or `download` (see below)
+- `ip_check_url` (optional) - IP-echo URL for the `ip` method (default: `https://api.ipify.org?format=text`)
+- `download_url` (optional) - file URL for the `download` method (default: `https://proof.ovh.net/files/1Mb.dat`)
+- `download_timeout` (optional) - timeout for the `download` method (default: `60s`)
+- `download_min_size` (optional) - minimum bytes to receive for the `download` method (default: `51200`)
 - `socks_port` (optional) - custom SOCKS5 port for this tunnel. Must be in range 1-65535. Duplicate ports across tunnels are not allowed. If not specified, ports are auto-assigned starting from 1080
 
 **Subscription parameters:**
@@ -172,6 +177,28 @@ tunnels:
 - Duration format: "30s", "1m", "1h30m"
 - If a parameter is not specified for a tunnel, the value from `defaults` is used
 - If not specified in `defaults`, the global default value is used
+
+### Check methods
+
+Three health-check methods are available, configurable per tunnel via `check_method` (or globally via `defaults.check_method`):
+
+- **`http`** (default) - GET the `check_url` and expect a 2xx/3xx status code. This is the original behaviour.
+- **`ip`** - GET an IP-echo service through the proxy and compare the returned IP with the host's real public IP (resolved once at startup). The check passes if the proxy IP differs from the real IP, confirming traffic actually routes through the proxy.
+- **`download`** - Download a file through the proxy and verify at least `download_min_size` bytes are received within `download_timeout`.
+
+All three methods measure latency as TTFB (time to first byte).
+
+```yaml
+defaults:
+  check_method: "ip"
+  ip_check_url: "https://api.ipify.org?format=text"
+tunnels:
+  - name: "Server 1"
+    url: "vless://..."
+    check_method: "download"
+    download_url: "https://proof.ovh.net/files/1Mb.dat"
+    download_min_size: 51200
+```
 
 ## Environment Variables
 
@@ -187,6 +214,11 @@ tunnels:
 | `LEADER_ELECTION_NAMESPACE` | pod namespace | Namespace for the Lease object |
 | `LEADER_ELECTION_NAME` | `xray-health-exporter` | Lease name |
 | `LEADER_ELECTION_IDENTITY` | `$HOSTNAME` | Unique replica ID |
+| `CHECK_METHOD` | `http` | Default check method if not set in YAML: `http`, `ip`, or `download` |
+| `IP_CHECK_URL` | `https://api.ipify.org?format=text` | IP-echo URL for the `ip` method |
+| `DOWNLOAD_URL` | `https://proof.ovh.net/files/1Mb.dat` | File URL for the `download` method |
+| `DOWNLOAD_TIMEOUT` | `60s` | Timeout for the `download` method |
+| `DOWNLOAD_MIN_SIZE` | `51200` | Minimum bytes for the `download` method |
 
 ## High Availability (Kubernetes)
 

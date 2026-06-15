@@ -703,6 +703,297 @@ func TestTunnelValidate_XrayConfigFile(t *testing.T) {
 	})
 }
 
+func TestTunnelValidate_CheckMethod(t *testing.T) {
+	baseTunnel := func(method string) *Tunnel {
+		return &Tunnel{
+			Name:          "method-test",
+			URL:           "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:      "https://example.com",
+			CheckInterval: "30s",
+			CheckTimeout:  "10s",
+			CheckMethod:   method,
+		}
+	}
+
+	validMethods := []string{"", "http", "ip", "download"}
+	for _, m := range validMethods {
+		t.Run("valid method "+m, func(t *testing.T) {
+			if err := baseTunnel(m).Validate(); err != nil {
+				t.Errorf("expected no error for check_method=%q, got: %v", m, err)
+			}
+		})
+	}
+
+	invalidMethods := []string{"foo", "HTTP", "tcp", "icmp"}
+	for _, m := range invalidMethods {
+		t.Run("invalid method "+m, func(t *testing.T) {
+			err := baseTunnel(m).Validate()
+			if err == nil {
+				t.Fatalf("expected error for check_method=%q", m)
+			}
+			if !strings.Contains(err.Error(), "invalid check_method") {
+				t.Errorf("expected check_method error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestTunnelValidate_DownloadTimeout(t *testing.T) {
+	baseTunnel := func(timeout string) *Tunnel {
+		return &Tunnel{
+			Name:            "download-timeout-test",
+			URL:             "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome",
+			CheckURL:        "https://example.com",
+			CheckInterval:   "30s",
+			CheckTimeout:    "10s",
+			DownloadTimeout: timeout,
+		}
+	}
+
+	t.Run("empty download_timeout is valid", func(t *testing.T) {
+		if err := baseTunnel("").Validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("valid download_timeout", func(t *testing.T) {
+		if err := baseTunnel("60s").Validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid download_timeout", func(t *testing.T) {
+		err := baseTunnel("not-a-duration").Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid download_timeout")
+		}
+		if !strings.Contains(err.Error(), "invalid download_timeout") {
+			t.Errorf("expected download_timeout error, got: %v", err)
+		}
+	})
+}
+
+func TestApplyTunnelDefaults_CheckMethod(t *testing.T) {
+	t.Run("fallback to global defaults when Defaults empty", func(t *testing.T) {
+		tun := &Tunnel{}
+		ApplyTunnelDefaults(tun, Defaults{})
+
+		if tun.CheckMethod != metrics.DefaultCheckMethod {
+			t.Errorf("CheckMethod = %v, want %v", tun.CheckMethod, metrics.DefaultCheckMethod)
+		}
+		if tun.IPCheckURL != metrics.DefaultIPCheckURL {
+			t.Errorf("IPCheckURL = %v, want %v", tun.IPCheckURL, metrics.DefaultIPCheckURL)
+		}
+		if tun.DownloadURL != metrics.DefaultDownloadURL {
+			t.Errorf("DownloadURL = %v, want %v", tun.DownloadURL, metrics.DefaultDownloadURL)
+		}
+		if tun.DownloadTimeout != metrics.DefaultDownloadTimeout.String() {
+			t.Errorf("DownloadTimeout = %v, want %v", tun.DownloadTimeout, metrics.DefaultDownloadTimeout.String())
+		}
+		if tun.DownloadMinSize != metrics.DefaultDownloadMinSize {
+			t.Errorf("DownloadMinSize = %v, want %v", tun.DownloadMinSize, metrics.DefaultDownloadMinSize)
+		}
+	})
+
+	t.Run("config defaults take priority over globals", func(t *testing.T) {
+		tun := &Tunnel{}
+		ApplyTunnelDefaults(tun, Defaults{
+			CheckMethod:     "ip",
+			IPCheckURL:      "https://custom-ip.example.com",
+			DownloadURL:     "https://custom-download.example.com",
+			DownloadTimeout: "120s",
+			DownloadMinSize: 102400,
+		})
+
+		if tun.CheckMethod != "ip" {
+			t.Errorf("CheckMethod = %v, want ip", tun.CheckMethod)
+		}
+		if tun.IPCheckURL != "https://custom-ip.example.com" {
+			t.Errorf("IPCheckURL = %v, want https://custom-ip.example.com", tun.IPCheckURL)
+		}
+		if tun.DownloadURL != "https://custom-download.example.com" {
+			t.Errorf("DownloadURL = %v, want https://custom-download.example.com", tun.DownloadURL)
+		}
+		if tun.DownloadTimeout != "120s" {
+			t.Errorf("DownloadTimeout = %v, want 120s", tun.DownloadTimeout)
+		}
+		if tun.DownloadMinSize != 102400 {
+			t.Errorf("DownloadMinSize = %v, want 102400", tun.DownloadMinSize)
+		}
+	})
+
+	t.Run("tunnel values not overwritten", func(t *testing.T) {
+		tun := &Tunnel{
+			CheckMethod:     "download",
+			IPCheckURL:      "https://mine-ip.example.com",
+			DownloadURL:     "https://mine-download.example.com",
+			DownloadTimeout: "90s",
+			DownloadMinSize: 204800,
+		}
+		ApplyTunnelDefaults(tun, Defaults{
+			CheckMethod:     "ip",
+			IPCheckURL:      "https://default-ip.example.com",
+			DownloadURL:     "https://default-download.example.com",
+			DownloadTimeout: "60s",
+			DownloadMinSize: 51200,
+		})
+
+		if tun.CheckMethod != "download" {
+			t.Errorf("CheckMethod = %v, want download", tun.CheckMethod)
+		}
+		if tun.IPCheckURL != "https://mine-ip.example.com" {
+			t.Errorf("IPCheckURL = %v, want https://mine-ip.example.com", tun.IPCheckURL)
+		}
+		if tun.DownloadURL != "https://mine-download.example.com" {
+			t.Errorf("DownloadURL = %v, want https://mine-download.example.com", tun.DownloadURL)
+		}
+		if tun.DownloadTimeout != "90s" {
+			t.Errorf("DownloadTimeout = %v, want 90s", tun.DownloadTimeout)
+		}
+		if tun.DownloadMinSize != 204800 {
+			t.Errorf("DownloadMinSize = %v, want 204800", tun.DownloadMinSize)
+		}
+	})
+}
+
+func TestApplyEnvDefaults(t *testing.T) {
+	t.Run("env vars fill empty defaults", func(t *testing.T) {
+		t.Setenv("CHECK_METHOD", "ip")
+		t.Setenv("IP_CHECK_URL", "https://env-ip.example.com")
+		t.Setenv("DOWNLOAD_URL", "https://env-download.example.com")
+		t.Setenv("DOWNLOAD_TIMEOUT", "45s")
+		t.Setenv("DOWNLOAD_MIN_SIZE", "99999")
+
+		d := &Defaults{}
+		ApplyEnvDefaults(d)
+
+		if d.CheckMethod != "ip" {
+			t.Errorf("CheckMethod = %v, want ip", d.CheckMethod)
+		}
+		if d.IPCheckURL != "https://env-ip.example.com" {
+			t.Errorf("IPCheckURL = %v, want https://env-ip.example.com", d.IPCheckURL)
+		}
+		if d.DownloadURL != "https://env-download.example.com" {
+			t.Errorf("DownloadURL = %v, want https://env-download.example.com", d.DownloadURL)
+		}
+		if d.DownloadTimeout != "45s" {
+			t.Errorf("DownloadTimeout = %v, want 45s", d.DownloadTimeout)
+		}
+		if d.DownloadMinSize != 99999 {
+			t.Errorf("DownloadMinSize = %v, want 99999", d.DownloadMinSize)
+		}
+	})
+
+	t.Run("YAML values take priority over env", func(t *testing.T) {
+		t.Setenv("CHECK_METHOD", "ip")
+
+		d := &Defaults{CheckMethod: "download"}
+		ApplyEnvDefaults(d)
+
+		if d.CheckMethod != "download" {
+			t.Errorf("CheckMethod = %v, want download (YAML should win)", d.CheckMethod)
+		}
+	})
+
+	t.Run("no env vars leaves defaults empty", func(t *testing.T) {
+		d := &Defaults{}
+		ApplyEnvDefaults(d)
+
+		if d.CheckMethod != "" {
+			t.Errorf("CheckMethod = %v, want empty", d.CheckMethod)
+		}
+	})
+
+	t.Run("invalid DOWNLOAD_MIN_SIZE is ignored", func(t *testing.T) {
+		t.Setenv("DOWNLOAD_MIN_SIZE", "not-a-number")
+
+		d := &Defaults{}
+		ApplyEnvDefaults(d)
+
+		if d.DownloadMinSize != 0 {
+			t.Errorf("DownloadMinSize = %v, want 0", d.DownloadMinSize)
+		}
+	})
+}
+
+func TestLoadConfig_CheckMethod(t *testing.T) {
+	t.Run("defaults with check_method", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		yaml := `defaults:
+  check_url: "https://example.com"
+  check_method: "ip"
+  ip_check_url: "https://api.ipify.org?format=text"
+tunnels:
+  - name: "test"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+		os.WriteFile(configFile, []byte(yaml), 0644)
+
+		config, err := LoadConfig(configFile)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+
+		if config.Tunnels[0].CheckMethod != "ip" {
+			t.Errorf("tunnel CheckMethod = %v, want ip", config.Tunnels[0].CheckMethod)
+		}
+		if config.Tunnels[0].IPCheckURL != "https://api.ipify.org?format=text" {
+			t.Errorf("tunnel IPCheckURL = %v", config.Tunnels[0].IPCheckURL)
+		}
+	})
+
+	t.Run("tunnel overrides defaults check_method", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		yaml := `defaults:
+  check_url: "https://example.com"
+  check_method: "ip"
+tunnels:
+  - name: "test"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"
+    check_method: "download"
+    download_url: "https://download.example.com"
+    download_min_size: 102400`
+
+		os.WriteFile(configFile, []byte(yaml), 0644)
+
+		config, err := LoadConfig(configFile)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+
+		if config.Tunnels[0].CheckMethod != "download" {
+			t.Errorf("tunnel CheckMethod = %v, want download", config.Tunnels[0].CheckMethod)
+		}
+		if config.Tunnels[0].DownloadURL != "https://download.example.com" {
+			t.Errorf("tunnel DownloadURL = %v", config.Tunnels[0].DownloadURL)
+		}
+		if config.Tunnels[0].DownloadMinSize != 102400 {
+			t.Errorf("tunnel DownloadMinSize = %v, want 102400", config.Tunnels[0].DownloadMinSize)
+		}
+	})
+
+	t.Run("default check_method is http when not specified", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configFile := filepath.Join(tmpDir, "config.yaml")
+		yaml := `tunnels:
+  - name: "test"
+    url: "vless://uuid@example.com:443?type=tcp&security=tls&sni=test.com&fp=chrome"`
+
+		os.WriteFile(configFile, []byte(yaml), 0644)
+
+		config, err := LoadConfig(configFile)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+
+		if config.Tunnels[0].CheckMethod != metrics.DefaultCheckMethod {
+			t.Errorf("tunnel CheckMethod = %v, want %v", config.Tunnels[0].CheckMethod, metrics.DefaultCheckMethod)
+		}
+	})
+}
+
 func TestValidateTunnels(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		config := &Config{

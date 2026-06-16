@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.6.0](https://github.com/batonogov/xray-health-exporter/compare/v1.5.0...v1.6.0) (2026-06-16)
+
+
+### Features
+
+* add benchmark tests ([#108](https://github.com/batonogov/xray-health-exporter/issues/108)) ([6deac49](https://github.com/batonogov/xray-health-exporter/commit/6deac495affba537c3d4d2aca5394bd208641866)), closes [#39](https://github.com/batonogov/xray-health-exporter/issues/39)
+* **checker:** add ip and download check methods ([#114](https://github.com/batonogov/xray-health-exporter/issues/114)) ([#123](https://github.com/batonogov/xray-health-exporter/issues/123)) ([40b5c1a](https://github.com/batonogov/xray-health-exporter/commit/40b5c1ab316bb544ff8aee872ce3e22b0304a47e))
+* **checker:** measure tunnel latency as TTFB via httptrace ([#120](https://github.com/batonogov/xray-health-exporter/issues/120)) ([6e51e38](https://github.com/batonogov/xray-health-exporter/commit/6e51e38b2c13515ea8b615882df6abe1fdf3f7ab))
+* **metrics:** push metrics to Prometheus Pushgateway ([#121](https://github.com/batonogov/xray-health-exporter/issues/121)) ([88d0b62](https://github.com/batonogov/xray-health-exporter/commit/88d0b62117c00cba67c3b5c941b14ee9b2bc75fb))
+* **server:** add optional Basic Auth for /metrics endpoint ([#119](https://github.com/batonogov/xray-health-exporter/issues/119)) ([6e4f80c](https://github.com/batonogov/xray-health-exporter/commit/6e4f80c792113e5e7d6c6c60f6ef92fce413c53f))
+* **server:** add RUN_ONCE mode for one-shot check cycle ([#122](https://github.com/batonogov/xray-health-exporter/issues/122)) ([5012c08](https://github.com/batonogov/xray-health-exporter/commit/5012c08c14c0f8ee87843ae158fa547df16782ea))
+
+
+### Bug Fixes
+
+* eliminate race condition in mock SOCKS server tests ([#113](https://github.com/batonogov/xray-health-exporter/issues/113)) ([f08e324](https://github.com/batonogov/xray-health-exporter/commit/f08e3240e9b5499b7c256ab95088bd5772eca926)), closes [#112](https://github.com/batonogov/xray-health-exporter/issues/112)
+
+
+### Refactoring
+
+* split main.go into packages ([#111](https://github.com/batonogov/xray-health-exporter/issues/111)) ([277e3cf](https://github.com/batonogov/xray-health-exporter/commit/277e3cf095ebdba4fa6a01b08c713a0984df7740))
+
 ## [1.5.0](https://github.com/batonogov/xray-health-exporter/compare/v1.4.0...v1.5.0) (2026-06-06)
 
 

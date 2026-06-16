@@ -77,5 +77,10 @@ type TunnelInstance struct {
 	CheckTimeout      time.Duration
 	MaxBackoff        time.Duration
 	BackoffMultiplier float64
+	CheckMethod       string
+	IPCheckURL        string
+	DownloadURL       string
+	DownloadTimeout   time.Duration
+	DownloadMinSize   int64
 	cancelFunc        context.CancelFunc
 }

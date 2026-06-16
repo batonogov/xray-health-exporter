@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -822,4 +823,293 @@ func startMockSOCKS(t *testing.T, afterConnect func(net.Conn)) (net.Listener, in
 	fmt.Sscanf(portStr, "%d", &port)
 
 	return listener, port
+}
+
+// --- Tests for check_method: ip (issue #114) ---
+
+func TestCheckByIP_Success(t *testing.T) {
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		// Proxy returns a DIFFERENT IP than the real IP.
+		ipResponse := "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n203.0.113.5\n"
+		c.Write([]byte(ipResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "ip-test-ok",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckMethod:   "ip",
+		IPCheckURL:    "http://ip.example.com",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("192.168.1.1")
+	result := checker.Check(ti)
+	if !result.Up {
+		t.Errorf("expected tunnel up (different IP), got error: %v", result.Err)
+	}
+	if result.HTTPStatus != 200 {
+		t.Errorf("expected HTTP 200, got %d", result.HTTPStatus)
+	}
+}
+
+func TestCheckByIP_SameIP(t *testing.T) {
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		// Proxy returns the SAME IP as the real IP.
+		ipResponse := "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n192.168.1.1\n"
+		c.Write([]byte(ipResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "ip-test-same",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckMethod:   "ip",
+		IPCheckURL:    "http://ip.example.com",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("192.168.1.1")
+	result := checker.Check(ti)
+	if result.Up {
+		t.Error("expected tunnel down (proxy IP matches real IP)")
+	}
+}
+
+func TestCheckByIP_BadStatus(t *testing.T) {
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		ipResponse := "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
+		c.Write([]byte(ipResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "ip-test-bad-status",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckMethod:   "ip",
+		IPCheckURL:    "http://ip.example.com",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("192.168.1.1")
+	result := checker.Check(ti)
+	if result.Up {
+		t.Error("expected tunnel down due to bad status")
+	}
+}
+
+// --- Tests for check_method: download (issue #114) ---
+
+func TestCheckByDownload_Success(t *testing.T) {
+	data := strings.Repeat("A", 60000)
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		httpResponse := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(data), data)
+		c.Write([]byte(httpResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "download-test-ok",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:       socksPort,
+		CheckMethod:     "download",
+		DownloadURL:     "http://download.example.com",
+		DownloadTimeout: 10 * time.Second,
+		DownloadMinSize: 51200,
+		CheckTimeout:    5 * time.Second,
+		CheckInterval:   30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("")
+	result := checker.Check(ti)
+	if !result.Up {
+		t.Errorf("expected tunnel up (enough bytes), got error: %v", result.Err)
+	}
+}
+
+func TestCheckByDownload_TooFewBytes(t *testing.T) {
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nshort"
+		c.Write([]byte(httpResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "download-test-few",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:       socksPort,
+		CheckMethod:     "download",
+		DownloadURL:     "http://download.example.com",
+		DownloadTimeout: 10 * time.Second,
+		DownloadMinSize: 51200,
+		CheckTimeout:    5 * time.Second,
+		CheckInterval:   30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("")
+	result := checker.Check(ti)
+	if result.Up {
+		t.Error("expected tunnel down (too few bytes)")
+	}
+}
+
+func TestCheckByDownload_BadStatus(t *testing.T) {
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		httpResponse := "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+		c.Write([]byte(httpResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "download-test-bad-status",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:       socksPort,
+		CheckMethod:     "download",
+		DownloadURL:     "http://download.example.com",
+		DownloadTimeout: 10 * time.Second,
+		DownloadMinSize: 51200,
+		CheckTimeout:    5 * time.Second,
+		CheckInterval:   30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("")
+	result := checker.Check(ti)
+	if result.Up {
+		t.Error("expected tunnel down due to bad status")
+	}
+}
+
+// --- Tests for ResolveRealIP ---
+
+func TestResolveRealIP(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("203.0.113.42\n"))
+	}))
+	defer ts.Close()
+
+	ip, err := ResolveRealIP(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatalf("ResolveRealIP error: %v", err)
+	}
+	if ip != "203.0.113.42" {
+		t.Errorf("got IP %q, want 203.0.113.42", ip)
+	}
+}
+
+func TestResolveRealIP_BadStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	_, err := ResolveRealIP(context.Background(), ts.URL)
+	if err == nil {
+		t.Error("expected error for bad status")
+	}
+}
+
+func TestResolveRealIP_Unreachable(t *testing.T) {
+	_, err := ResolveRealIP(context.Background(), "http://127.0.0.1:0/nope")
+	if err == nil {
+		t.Error("expected error for unreachable URL")
+	}
+}
+
+// --- Test for Check routing (default = http) ---
+
+func TestCheck_DefaultMethodIsHTTP(t *testing.T) {
+	ts := httptest.NewServer(httptestHandler())
+	defer ts.Close()
+
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+		c.Write([]byte(httpResponse))
+	})
+	defer socksListener.Close()
+
+	// CheckMethod is empty — should default to http.
+	ti := &tunnel.TunnelInstance{
+		Name: "default-method-test",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      ts.URL,
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	checker := NewDefaultChecker("")
+	result := checker.Check(ti)
+	if !result.Up {
+		t.Errorf("expected tunnel up via default http method, got error: %v", result.Err)
+	}
 }

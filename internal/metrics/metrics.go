@@ -23,6 +23,13 @@ const (
 	DefaultBackoffMult   = 2.0
 	SocksDialTimeout     = 5 * time.Second
 	SocksStartupTimeout  = 10 * time.Second
+
+	// Check method defaults (issue #114).
+	DefaultCheckMethod     = "http"
+	DefaultIPCheckURL      = "https://api.ipify.org?format=text"
+	DefaultDownloadURL     = "https://proof.ovh.net/files/1Mb.dat"
+	DefaultDownloadTimeout = 60 * time.Second
+	DefaultDownloadMinSize = int64(51200)
 )
 
 var (

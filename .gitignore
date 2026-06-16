@@ -35,6 +35,3 @@ config.yaml
 
 # Claude Code
 .claude/
-
-# Superpowers plans
-docs/superpowers/

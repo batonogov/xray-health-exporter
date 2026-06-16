@@ -156,9 +156,11 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 	}, nil
 }
 
-// InitializeTunnels creates and starts all tunnel instances from config.
-// Returns the instances and the next available auto-port (past all assigned auto-ports).
-func InitializeTunnels(cfg *config.Config, baseSocksPort int, checker HealthChecker, mu MetricsUpdater) ([]*TunnelInstance, int, error) {
+// createTunnelInstances creates and starts all tunnel instances from config,
+// assigns SOCKS ports, and waits for the ports to become ready. It does NOT
+// start periodic checker goroutines — that is the caller's responsibility.
+// This is shared between InitializeTunnels (daemon) and RunOnce (one-shot).
+func createTunnelInstances(cfg *config.Config, baseSocksPort int) ([]*TunnelInstance, int, error) {
 	if len(cfg.Tunnels) == 0 {
 		return nil, baseSocksPort, fmt.Errorf("no tunnels to initialize")
 	}
@@ -215,6 +217,18 @@ func InitializeTunnels(cfg *config.Config, baseSocksPort int, checker HealthChec
 		if err := WaitForSOCKSPort(ti.SocksPort, metrics.SocksStartupTimeout); err != nil {
 			slog.Warn("SOCKS port not ready", "tunnel", ti.Name, "port", ti.SocksPort, "error", err)
 		}
+	}
+
+	return tunnelInstances, nextAutoPort, nil
+}
+
+// InitializeTunnels creates and starts all tunnel instances from config and
+// launches periodic checker goroutines for each.
+// Returns the instances and the next available auto-port (past all assigned auto-ports).
+func InitializeTunnels(cfg *config.Config, baseSocksPort int, checker HealthChecker, mu MetricsUpdater) ([]*TunnelInstance, int, error) {
+	tunnelInstances, nextAutoPort, err := createTunnelInstances(cfg, baseSocksPort)
+	if err != nil {
+		return nil, baseSocksPort, err
 	}
 
 	// Start checker goroutines for all tunnels

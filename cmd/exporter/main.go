@@ -60,9 +60,9 @@ func setupLogger() {
 
 	var handler slog.Handler
 	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "json") {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
+		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 
 	slog.SetDefault(slog.New(handler))
@@ -79,6 +79,25 @@ func main() {
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile == "" {
 		configFile = config.DefaultConfigFile
+	}
+
+	// RUN_ONCE mode: load config, check every tunnel once, print metrics to
+	// stdout, and exit. No HTTP server, watchers, or leader election.
+	if os.Getenv("RUN_ONCE") == "true" {
+		metrics.SetLeader(true)
+
+		slog.Info("running in run-once mode")
+
+		allUp, err := tunnel.RunOnce(configFile, checker.DefaultChecker{}, tunnel.NewPrometheusMetrics(), os.Stdout)
+		if err != nil {
+			slog.Error("run-once failed", "error", err)
+			os.Exit(1)
+		}
+
+		if !allUp {
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 
 	listenAddr := os.Getenv("LISTEN_ADDR")

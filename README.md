@@ -219,6 +219,25 @@ tunnels:
 | `DOWNLOAD_URL` | `https://proof.ovh.net/files/1Mb.dat` | File URL for the `download` method |
 | `DOWNLOAD_TIMEOUT` | `60s` | Timeout for the `download` method |
 | `DOWNLOAD_MIN_SIZE` | `51200` | Minimum bytes for the `download` method |
+| `RUN_ONCE` | `false` | If `true`, run one check cycle, print metrics to stdout, and exit (see below) |
+
+### Run-Once Mode
+
+Set `RUN_ONCE=true` to execute a single check cycle and exit — useful for CI pipelines, scripts, and debugging. In this mode the exporter:
+
+1. Loads the config and resolves subscriptions.
+2. Starts Xray instances for all tunnels.
+3. Performs exactly one health-check per tunnel (concurrently).
+4. Prints all metrics to **stdout** in Prometheus text-exposition format.
+5. Stops all tunnels and exits.
+
+**Exit code:** `0` if all tunnels are up, `1` if any tunnel is down or an error occurred.
+
+```bash
+RUN_ONCE=true CONFIG_FILE=./config.yaml go run .
+```
+
+> **Note:** In run-once mode the HTTP server, config watcher, and subscription watcher are **not** started. Leader election is ignored — the check always runs locally.
 
 ## High Availability (Kubernetes)
 

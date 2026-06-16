@@ -89,6 +89,5 @@ Full list with types, buckets, and exporter-level metrics: [`docs/metrics.md`](.
 ## Do not commit
 
 - `config.yaml` — real config with secrets (gitignored).
-- `docs/superpowers/` — artifacts of the superpowers skill, not part of the project (gitignored). Do not add tracked files there to commits.
 - `.claude/` — local Claude Code state (gitignored).
 - Binary `xray-health-exporter`, `coverage.out`, `*.test`.

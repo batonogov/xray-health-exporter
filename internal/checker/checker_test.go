@@ -683,6 +683,44 @@ func TestConcurrentCheckTunnel(t *testing.T) {
 	wg.Wait()
 }
 
+func TestPerformCheck_TTFBLatency(t *testing.T) {
+	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
+		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		buf := make([]byte, 4096)
+		c.Read(buf)
+		httpResponse := "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+		c.Write([]byte(httpResponse))
+	})
+	defer socksListener.Close()
+
+	ti := &tunnel.TunnelInstance{
+		Name: "ttfb-test",
+		MetricLabels: tunnel.MetricLabels{
+			Server:   "test.example.com:443",
+			Security: "tls",
+			SNI:      "test.example.com",
+		},
+		SocksPort:     socksPort,
+		CheckURL:      "http://test.example.com",
+		CheckTimeout:  5 * time.Second,
+		CheckInterval: 30 * time.Second,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	result := PerformCheck(ti)
+	if !result.Up {
+		t.Fatalf("expected tunnel to be up, got error: %v", result.Err)
+	}
+	if result.HTTPStatus != 200 {
+		t.Errorf("expected HTTP 200, got %d", result.HTTPStatus)
+	}
+	// Latency is now measured as TTFB; it must be captured and positive.
+	if result.Latency <= 0 {
+		t.Errorf("expected positive TTFB latency, got %v", result.Latency)
+	}
+}
+
 // Benchmarks
 
 func BenchmarkCheckTunnel(b *testing.B) {

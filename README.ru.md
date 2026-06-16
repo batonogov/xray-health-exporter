@@ -238,6 +238,25 @@ RUN_ONCE=true CONFIG_FILE=./config.yaml go run .
 ```
 
 > **Примечание:** В режиме run-once HTTP-сервер, наблюдатель конфигурации и наблюдатель подписок **не запускаются**. Leader election игнорируется — проверка всегда выполняется локально.
+| `METRICS_PUSH_URL` | _(пусто)_ | Полный URL Pushgateway (напр. `https://user:pass@pushgateway:9091`). Если задан, метрики периодически отправляются в Pushgateway в дополнение к pull-эндпоинту `/metrics`. Пусто — push отключен (по умолчанию). |
+| `METRICS_PUSH_INTERVAL` | мин. `check_interval`, или `30s` | Интервал отправки (строка длительности Go, напр. `30s`, `1m`) |
+| `METRICS_INSTANCE` | `os.Hostname()` | Значение label-группировки `instance` для отправляемых метрик |
+
+### Prometheus Pushgateway
+
+Если экспортёр запущен за NAT или в сети, где Prometheus не может скрейпить `/metrics`, можно отправлять метрики в [Pushgateway](https://github.com/prometheus/pushgateway):
+
+```bash
+METRICS_PUSH_URL=https://user:pass@pushgateway.example.com:9091
+METRICS_PUSH_INTERVAL=30s
+METRICS_INSTANCE=node-1
+```
+
+- Push — **дополнение**, HTTP-эндпоинт `/metrics` остаётся доступным.
+- Отправка происходит только когда этот инстанс — **leader** (или leader election отключён).
+- Учётные данные в URL (`user:pass@`) автоматически извлекаются для HTTP Basic Auth.
+- **Путь в URL игнорируется** — `prometheus/push` сам строит `/metrics/job/xray-health-exporter`, поэтому не указывайте префикс reverse-proxy в `METRICS_PUSH_URL`.
+- Отправляется **весь реестр по умолчанию** (включая метрики `go_*` и `process_*`), а не только серии `xray_tunnel_*`.
 
 ## Высокая доступность (Kubernetes)
 

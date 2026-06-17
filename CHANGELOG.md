@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.1](https://github.com/batonogov/xray-health-exporter/compare/v1.6.0...v1.6.1) (2026-06-16)
+
+
+### Dependencies
+
+* **deps:** bump alpine in the docker-dependencies group ([#126](https://github.com/batonogov/xray-health-exporter/issues/126)) ([2c7b61a](https://github.com/batonogov/xray-health-exporter/commit/2c7b61a813269bf3386686872fba4951c6cc5557))
+* **deps:** bump the go-dependencies group with 3 updates ([#127](https://github.com/batonogov/xray-health-exporter/issues/127)) ([d80a53a](https://github.com/batonogov/xray-health-exporter/commit/d80a53a4ed103daf299cf6068e2a3c040847b06c))
+
 ## [1.6.0](https://github.com/batonogov/xray-health-exporter/compare/v1.5.0...v1.6.0) (2026-06-16)
 
 

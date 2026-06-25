@@ -43,7 +43,7 @@ jobs:
             goarch: arm
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Настройка Go
         uses: actions/setup-go@v6
@@ -73,7 +73,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Скачивание собранных бинарников
         uses: actions/download-artifact@v8
@@ -115,7 +115,7 @@ jobs:
     needs: [version, build, docker]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Скачивание Linux AMD64 бинарника
         uses: actions/download-artifact@v8

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.3](https://github.com/batonogov/xray-health-exporter/compare/v1.6.2...v1.6.3) (2026-07-01)
+
+
+### Bug Fixes
+
+* **ci:** correct truncated setup-go SHA (38→40 chars) ([#133](https://github.com/batonogov/xray-health-exporter/issues/133)) ([5b197e4](https://github.com/batonogov/xray-health-exporter/commit/5b197e48f760e6b57e5039c55bfa579c7aaeec90))
+
 ## [1.6.2](https://github.com/batonogov/xray-health-exporter/compare/v1.6.1...v1.6.2) (2026-06-25)
 
 

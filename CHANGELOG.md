@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.6.3](https://github.com/batonogov/xray-health-exporter/compare/v1.6.2...v1.6.3) (2026-07-16)
+
+
+### Bug Fixes
+
+* **ci:** correct truncated setup-go SHA (38→40 chars) ([#133](https://github.com/batonogov/xray-health-exporter/issues/133)) ([5b197e4](https://github.com/batonogov/xray-health-exporter/commit/5b197e48f760e6b57e5039c55bfa579c7aaeec90))
+
+
+### Dependencies
+
+* **deps:** bump github.com/prometheus/common ([#137](https://github.com/batonogov/xray-health-exporter/issues/137)) ([98edffd](https://github.com/batonogov/xray-health-exporter/commit/98edffdacdda0c16fec2e53df5607d0ae507ca97))
+* **deps:** bump golang in the docker-dependencies group ([#136](https://github.com/batonogov/xray-health-exporter/issues/136)) ([5b65e81](https://github.com/batonogov/xray-health-exporter/commit/5b65e81af7eacf27421c304c58398265f5b97140))
+* **deps:** bump softprops/action-gh-release ([#138](https://github.com/batonogov/xray-health-exporter/issues/138)) ([ee1a481](https://github.com/batonogov/xray-health-exporter/commit/ee1a4815906b026e74f2b938dd67639a15af027b))
+* **deps:** bump the github-actions group with 2 updates ([#135](https://github.com/batonogov/xray-health-exporter/issues/135)) ([74ba055](https://github.com/batonogov/xray-health-exporter/commit/74ba055269dabea3ffb19f6e5af585c7f1846160))
+
 ## [1.6.2](https://github.com/batonogov/xray-health-exporter/compare/v1.6.1...v1.6.2) (2026-06-25)
 
 

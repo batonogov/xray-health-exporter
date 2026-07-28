@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.4](https://github.com/batonogov/xray-health-exporter/compare/v1.6.3...v1.6.4) (2026-07-28)
+
+
+### Dependencies
+
+* **deps:** bump docker/login-action in the github-actions group ([#143](https://github.com/batonogov/xray-health-exporter/issues/143)) ([7fa8b5f](https://github.com/batonogov/xray-health-exporter/commit/7fa8b5fce2049736a0e8f072a498b70c6fd17a20))
+* **deps:** bump github.com/prometheus/client_golang ([#139](https://github.com/batonogov/xray-health-exporter/issues/139)) ([1450cc4](https://github.com/batonogov/xray-health-exporter/commit/1450cc44f1be6a3723fc0199d8520c2c6befe89c))
+* **deps:** bump the github-actions group with 2 updates ([#140](https://github.com/batonogov/xray-health-exporter/issues/140)) ([8b71098](https://github.com/batonogov/xray-health-exporter/commit/8b710988856f65485b11c006cb1e284942062c9d))
+* **deps:** bump the go-dependencies group with 4 updates ([#142](https://github.com/batonogov/xray-health-exporter/issues/142)) ([6101665](https://github.com/batonogov/xray-health-exporter/commit/61016650e9dbfd5ad2423912620ecca116039540))
+
 ## [1.6.3](https://github.com/batonogov/xray-health-exporter/compare/v1.6.2...v1.6.3) (2026-07-16)
 
 

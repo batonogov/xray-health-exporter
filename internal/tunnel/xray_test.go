@@ -1,11 +1,16 @@
 package tunnel
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/xtls/xray-core/infra/conf"
 )
 
 func TestParseVLESSURL(t *testing.T) {
@@ -19,16 +24,17 @@ func TestParseVLESSURL(t *testing.T) {
 			name: "valid vless url with reality",
 			url:  "vless://uuid-123@example.com:443?type=tcp&security=reality&pbk=test-key&sni=google.com&sid=short123&spx=/&fp=chrome",
 			want: &VLESSConfig{
-				UUID:     "uuid-123",
-				Address:  "example.com",
-				Port:     443,
-				Type:     "tcp",
-				Security: "reality",
-				PBK:      "test-key",
-				SNI:      "google.com",
-				SID:      "short123",
-				SPX:      "/",
-				FP:       "chrome",
+				UUID:       "uuid-123",
+				Address:    "example.com",
+				Port:       443,
+				Encryption: "none",
+				Type:       "tcp",
+				Security:   "reality",
+				PBK:        "test-key",
+				SNI:        "google.com",
+				SID:        "short123",
+				SPX:        "/",
+				FP:         "chrome",
 			},
 			wantErr: false,
 		},
@@ -36,15 +42,16 @@ func TestParseVLESSURL(t *testing.T) {
 			name: "valid vless url with tls",
 			url:  "vless://uuid-456@server.net:8443?type=ws&security=tls&sni=server.net&fp=firefox&host=server.net&path=%2Fws",
 			want: &VLESSConfig{
-				UUID:     "uuid-456",
-				Address:  "server.net",
-				Port:     8443,
-				Type:     "ws",
-				Security: "tls",
-				SNI:      "server.net",
-				FP:       "firefox",
-				Host:     "server.net",
-				Path:     "/ws",
+				UUID:       "uuid-456",
+				Address:    "server.net",
+				Port:       8443,
+				Encryption: "none",
+				Type:       "ws",
+				Security:   "tls",
+				SNI:        "server.net",
+				FP:         "firefox",
+				Host:       "server.net",
+				Path:       "/ws",
 			},
 			wantErr: false,
 		},
@@ -65,14 +72,16 @@ func TestParseVLESSURL(t *testing.T) {
 		},
 		{
 			name: "valid vless url with grpc transport",
-			url:  "vless://uuid-789@grpc.example.com:443/?type=grpc&serviceName=grpc-service&authority=grpc-host&multiMode=true&security=reality&pbk=test-pbk&fp=chrome&sni=grpc.example.com&sid=ab12cd34",
+			url:  "vless://uuid-789@grpc.example.com:443/?type=grpc&serviceName=grpc-service&authority=grpc-host&mode=multi&security=reality&pbk=test-pbk&fp=chrome&sni=grpc.example.com&sid=ab12cd34",
 			want: &VLESSConfig{
 				UUID:        "uuid-789",
 				Address:     "grpc.example.com",
 				Port:        443,
+				Encryption:  "none",
 				Type:        "grpc",
 				ServiceName: "grpc-service",
 				Authority:   "grpc-host",
+				Mode:        "multi",
 				MultiMode:   true,
 				Security:    "reality",
 				PBK:         "test-pbk",
@@ -81,6 +90,57 @@ func TestParseVLESSURL(t *testing.T) {
 				SID:         "ab12cd34",
 			},
 			wantErr: false,
+		},
+		{
+			name: "current xhttp reality link",
+			url: "vless://11111111-1111-4111-8111-111111111111@edge.example.com:443?" +
+				"type=xhttp&security=reality&encryption=none&flow=xtls-rprx-vision" +
+				"&pbk=test-key&sni=www.example.com&sid=0123456789abcdef&pqv=test-pq-key" +
+				"&spx=%2Fcrawler&fp=chrome&host=cdn.example.com&path=%2Fapi%2Fv1" +
+				"&mode=stream-up&extra=" + url.QueryEscape(`{"xPaddingBytes":"100-1000","xmux":{"maxConcurrency":"1-4"}}`) +
+				"&fm=" + url.QueryEscape(`{"tcp":[{"type":"salamander","settings":{"password":"mask"}}]}`),
+			want: &VLESSConfig{
+				UUID:       "11111111-1111-4111-8111-111111111111",
+				Address:    "edge.example.com",
+				Port:       443,
+				Encryption: "none",
+				Flow:       "xtls-rprx-vision",
+				Type:       "xhttp",
+				Security:   "reality",
+				PBK:        "test-key",
+				SNI:        "www.example.com",
+				FP:         "chrome",
+				SID:        "0123456789abcdef",
+				PQV:        "test-pq-key",
+				SPX:        "/crawler",
+				Host:       "cdn.example.com",
+				Path:       "/api/v1",
+				Mode:       "stream-up",
+				Extra:      json.RawMessage(`{"xPaddingBytes":"100-1000","xmux":{"maxConcurrency":"1-4"}}`),
+				FinalMask:  json.RawMessage(`{"tcp":[{"type":"salamander","settings":{"password":"mask"}}]}`),
+			},
+		},
+		{
+			name: "current tls options",
+			url: "vless://22222222-2222-4222-8222-222222222222@tls.example.com:443?" +
+				"type=httpupgrade&security=tls&host=cdn.example.com&path=%2Fupgrade" +
+				"&alpn=h2%2Chttp%2F1.1&ech=ech-config&pcs=cert-pin&vcn=verify.example.com",
+			want: &VLESSConfig{
+				UUID:                 "22222222-2222-4222-8222-222222222222",
+				Address:              "tls.example.com",
+				Port:                 443,
+				Encryption:           "none",
+				Type:                 "httpupgrade",
+				Security:             "tls",
+				SNI:                  "tls.example.com",
+				FP:                   "chrome",
+				ALPN:                 []string{"h2", "http/1.1"},
+				ECHConfigList:        "ech-config",
+				PinnedPeerCertSHA256: "cert-pin",
+				VerifyPeerCertByName: "verify.example.com",
+				Host:                 "cdn.example.com",
+				Path:                 "/upgrade",
+			},
 		},
 		{
 			name:    "grpc without serviceName",
@@ -96,53 +156,79 @@ func TestParseVLESSURL(t *testing.T) {
 				t.Errorf("ParseVLESSURL() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if !tt.wantErr {
-				if got.UUID != tt.want.UUID {
-					t.Errorf("UUID = %v, want %v", got.UUID, tt.want.UUID)
-				}
-				if got.Address != tt.want.Address {
-					t.Errorf("Address = %v, want %v", got.Address, tt.want.Address)
-				}
-				if got.Port != tt.want.Port {
-					t.Errorf("Port = %v, want %v", got.Port, tt.want.Port)
-				}
-				if got.Security != tt.want.Security {
-					t.Errorf("Security = %v, want %v", got.Security, tt.want.Security)
-				}
-				if got.Type != tt.want.Type {
-					t.Errorf("Type = %v, want %v", got.Type, tt.want.Type)
-				}
-				if got.ServiceName != tt.want.ServiceName {
-					t.Errorf("ServiceName = %v, want %v", got.ServiceName, tt.want.ServiceName)
-				}
-				if got.Authority != tt.want.Authority {
-					t.Errorf("Authority = %v, want %v", got.Authority, tt.want.Authority)
-				}
-				if got.MultiMode != tt.want.MultiMode {
-					t.Errorf("MultiMode = %v, want %v", got.MultiMode, tt.want.MultiMode)
-				}
-				if got.Host != tt.want.Host {
-					t.Errorf("Host = %v, want %v", got.Host, tt.want.Host)
-				}
-				if got.Path != tt.want.Path {
-					t.Errorf("Path = %v, want %v", got.Path, tt.want.Path)
-				}
+			if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseVLESSURL() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestVLESSURL_NoSecurity(t *testing.T) {
-	url := "vless://uuid@example.com:443?type=tcp"
+	url := "vless://uuid@example.com:443"
 	config, err := ParseVLESSURL(url)
 	if err != nil {
 		t.Fatalf("ParseVLESSURL() error = %v", err)
 	}
-	if config.Security != "" {
-		t.Errorf("Security = %v, want empty", config.Security)
+	if config.Security != "none" {
+		t.Errorf("Security = %v, want none", config.Security)
 	}
 	if config.Type != "tcp" {
 		t.Errorf("Type = %v, want tcp", config.Type)
+	}
+	if config.Encryption != "none" {
+		t.Errorf("Encryption = %v, want none", config.Encryption)
+	}
+}
+
+func TestParseVLESSURL_TransportCompatibility(t *testing.T) {
+	t.Run("legacy HTTP becomes XHTTP stream-one", func(t *testing.T) {
+		config, err := ParseVLESSURL("vless://uuid@example.com:443?type=http&security=tls&path=%2Fh2&host=cdn.example.com")
+		if err != nil {
+			t.Fatalf("ParseVLESSURL() error = %v", err)
+		}
+		if config.Type != "xhttp" || config.Mode != "stream-one" {
+			t.Errorf("transport = %s/%s, want xhttp/stream-one", config.Type, config.Mode)
+		}
+	})
+
+	t.Run("current mKCP parameters", func(t *testing.T) {
+		config, err := ParseVLESSURL("vless://uuid@example.com:443?type=kcp&mtu=1350&tti=50")
+		if err != nil {
+			t.Fatalf("ParseVLESSURL() error = %v", err)
+		}
+		if config.KCPMTU == nil || *config.KCPMTU != 1350 {
+			t.Errorf("KCPMTU = %v, want 1350", config.KCPMTU)
+		}
+		if config.KCPTTI == nil || *config.KCPTTI != 50 {
+			t.Errorf("KCPTTI = %v, want 50", config.KCPTTI)
+		}
+	})
+}
+
+func TestParseVLESSURL_Validation(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "missing UUID", url: "vless://example.com:443?type=tcp"},
+		{name: "missing address", url: "vless://uuid@:443?type=tcp"},
+		{name: "port out of range", url: "vless://uuid@example.com:65536?type=tcp"},
+		{name: "duplicate parameter", url: "vless://uuid@example.com:443?type=tcp&type=ws"},
+		{name: "unsupported transport", url: "vless://uuid@example.com:443?type=quic"},
+		{name: "unsupported security", url: "vless://uuid@example.com:443?security=xtls"},
+		{name: "reality without password", url: "vless://uuid@example.com:443?security=reality&fp=chrome"},
+		{name: "invalid xhttp mode", url: "vless://uuid@example.com:443?type=xhttp&mode=invalid"},
+		{name: "invalid xhttp extra", url: "vless://uuid@example.com:443?type=xhttp&extra=%7Bbroken"},
+		{name: "invalid finalmask", url: "vless://uuid@example.com:443?type=tcp&fm=%5B%5D"},
+		{name: "invalid kcp mtu", url: "vless://uuid@example.com:443?type=kcp&mtu=invalid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseVLESSURL(tt.url); err == nil {
+				t.Fatal("ParseVLESSURL() expected an error")
+			}
+		})
 	}
 }
 
@@ -174,11 +260,11 @@ func TestCreateStreamSettings(t *testing.T) {
 				if !ok {
 					t.Fatal("realitySettings not found")
 				}
-				if reality["publicKey"] != "test-key" {
-					t.Errorf("publicKey = %v, want test-key", reality["publicKey"])
-				}
 				if reality["serverName"] != "google.com" {
 					t.Errorf("serverName = %v, want google.com", reality["serverName"])
+				}
+				if reality["password"] != "test-key" {
+					t.Errorf("password = %v, want test-key", reality["password"])
 				}
 			},
 		},
@@ -306,12 +392,8 @@ func TestCreateStreamSettings(t *testing.T) {
 				if ws["path"] != "/ws-path" {
 					t.Errorf("path = %v, want /ws-path", ws["path"])
 				}
-				headers, ok := ws["headers"].(map[string]interface{})
-				if !ok {
-					t.Fatal("wsSettings.headers not found")
-				}
-				if headers["Host"] != "ws.example.com" {
-					t.Errorf("headers.Host = %v, want ws.example.com", headers["Host"])
+				if ws["host"] != "ws.example.com" {
+					t.Errorf("host = %v, want ws.example.com", ws["host"])
 				}
 			},
 		},
@@ -339,6 +421,126 @@ func TestCreateStreamSettings(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "xhttp settings with current options",
+			config: &VLESSConfig{
+				Type:      "xhttp",
+				Security:  "reality",
+				Host:      "cdn.example.com",
+				Path:      "/api",
+				Mode:      "stream-up",
+				Extra:     json.RawMessage(`{"xPaddingBytes":"100-1000"}`),
+				FinalMask: json.RawMessage(`{"tcp":[{"type":"salamander","settings":{"password":"mask"}}]}`),
+				PBK:       "test-key",
+				SNI:       "www.example.com",
+				FP:        "chrome",
+				SID:       "0123456789abcdef",
+				PQV:       "test-pq-key",
+				SPX:       "/crawler",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				if settings["network"] != "xhttp" {
+					t.Errorf("network = %v, want xhttp", settings["network"])
+				}
+				xhttp, ok := settings["xhttpSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("xhttpSettings not found")
+				}
+				if xhttp["host"] != "cdn.example.com" {
+					t.Errorf("host = %v, want cdn.example.com", xhttp["host"])
+				}
+				if xhttp["path"] != "/api" {
+					t.Errorf("path = %v, want /api", xhttp["path"])
+				}
+				if xhttp["mode"] != "stream-up" {
+					t.Errorf("mode = %v, want stream-up", xhttp["mode"])
+				}
+				if string(xhttp["extra"].(json.RawMessage)) != `{"xPaddingBytes":"100-1000"}` {
+					t.Errorf("extra = %s", xhttp["extra"])
+				}
+				if string(settings["finalmask"].(json.RawMessage)) == "" {
+					t.Error("finalmask not found")
+				}
+				reality := settings["realitySettings"].(map[string]interface{})
+				if reality["password"] != "test-key" {
+					t.Errorf("password = %v, want test-key", reality["password"])
+				}
+				if reality["mldsa65Verify"] != "test-pq-key" {
+					t.Errorf("mldsa65Verify = %v, want test-pq-key", reality["mldsa65Verify"])
+				}
+			},
+		},
+		{
+			name: "httpupgrade settings",
+			config: &VLESSConfig{
+				Type: "httpupgrade",
+				Host: "cdn.example.com",
+				Path: "/upgrade",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				httpUpgrade, ok := settings["httpupgradeSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("httpupgradeSettings not found")
+				}
+				if httpUpgrade["host"] != "cdn.example.com" {
+					t.Errorf("host = %v, want cdn.example.com", httpUpgrade["host"])
+				}
+				if httpUpgrade["path"] != "/upgrade" {
+					t.Errorf("path = %v, want /upgrade", httpUpgrade["path"])
+				}
+			},
+		},
+		{
+			name: "kcp settings",
+			config: func() *VLESSConfig {
+				mtu := uint32(1350)
+				tti := uint32(50)
+				return &VLESSConfig{Type: "kcp", KCPMTU: &mtu, KCPTTI: &tti}
+			}(),
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				kcp, ok := settings["kcpSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("kcpSettings not found")
+				}
+				if kcp["mtu"] != uint32(1350) {
+					t.Errorf("mtu = %v, want 1350", kcp["mtu"])
+				}
+				if kcp["tti"] != uint32(50) {
+					t.Errorf("tti = %v, want 50", kcp["tti"])
+				}
+			},
+		},
+		{
+			name: "current tls settings",
+			config: &VLESSConfig{
+				Type:                 "xhttp",
+				Security:             "tls",
+				SNI:                  "tls.example.com",
+				FP:                   "chrome",
+				ALPN:                 []string{"h2", "http/1.1"},
+				ECHConfigList:        "ech-config",
+				PinnedPeerCertSHA256: "cert-pin",
+				VerifyPeerCertByName: "verify.example.com",
+			},
+			checks: func(t *testing.T, settings map[string]interface{}) {
+				tlsSettings, ok := settings["tlsSettings"].(map[string]interface{})
+				if !ok {
+					t.Fatal("tlsSettings not found")
+				}
+				if !reflect.DeepEqual(tlsSettings["alpn"], []string{"h2", "http/1.1"}) {
+					t.Errorf("alpn = %#v", tlsSettings["alpn"])
+				}
+				if tlsSettings["echConfigList"] != "ech-config" {
+					t.Errorf("echConfigList = %v", tlsSettings["echConfigList"])
+				}
+				if tlsSettings["pinnedPeerCertSha256"] != "cert-pin" {
+					t.Errorf("pinnedPeerCertSha256 = %v", tlsSettings["pinnedPeerCertSha256"])
+				}
+				if tlsSettings["verifyPeerCertByName"] != "verify.example.com" {
+					t.Errorf("verifyPeerCertByName = %v", tlsSettings["verifyPeerCertByName"])
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -351,16 +553,18 @@ func TestCreateStreamSettings(t *testing.T) {
 
 func TestCreateXrayConfig(t *testing.T) {
 	config := &VLESSConfig{
-		UUID:     "test-uuid",
-		Address:  "example.com",
-		Port:     443,
-		Type:     "tcp",
-		Security: "reality",
-		PBK:      "test-key",
-		SNI:      "google.com",
-		SID:      "short123",
-		SPX:      "/",
-		FP:       "chrome",
+		UUID:       "test-uuid",
+		Address:    "example.com",
+		Port:       443,
+		Encryption: "none",
+		Flow:       "xtls-rprx-vision",
+		Type:       "tcp",
+		Security:   "reality",
+		PBK:        "test-key",
+		SNI:        "google.com",
+		SID:        "short123",
+		SPX:        "/",
+		FP:         "chrome",
 	}
 
 	jsonData, err := CreateXrayConfig(config, 1080)
@@ -407,8 +611,11 @@ func TestCreateXrayConfig(t *testing.T) {
 	if users["id"] != "test-uuid" {
 		t.Errorf("user id = %v, want test-uuid", users["id"])
 	}
-	if _, exists := users["flow"]; exists {
-		t.Error("flow should not be set in user config")
+	if users["encryption"] != "none" {
+		t.Errorf("encryption = %v, want none", users["encryption"])
+	}
+	if users["flow"] != "xtls-rprx-vision" {
+		t.Errorf("flow = %v, want xtls-rprx-vision", users["flow"])
 	}
 }
 
@@ -467,6 +674,40 @@ func TestCreateXrayConfig_gRPC(t *testing.T) {
 	inbound := inbounds[0].(map[string]interface{})
 	if inbound["port"].(float64) != 1081 {
 		t.Errorf("inbound port = %v, want 1081", inbound["port"])
+	}
+}
+
+func TestCreateXrayConfig_XHTTPBuildsWithCurrentXray(t *testing.T) {
+	publicKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	config := &VLESSConfig{
+		UUID:       "11111111-1111-4111-8111-111111111111",
+		Address:    "edge.example.com",
+		Port:       443,
+		Encryption: "none",
+		Flow:       "xtls-rprx-vision",
+		Type:       "xhttp",
+		Security:   "reality",
+		PBK:        publicKey,
+		SNI:        "www.example.com",
+		FP:         "chrome",
+		SID:        "0123456789abcdef",
+		Host:       "cdn.example.com",
+		Path:       "/api",
+		Mode:       "stream-up",
+		Extra:      json.RawMessage(`{"xPaddingBytes":"100-1000"}`),
+	}
+
+	jsonData, err := CreateXrayConfig(config, 1082)
+	if err != nil {
+		t.Fatalf("CreateXrayConfig() error = %v", err)
+	}
+
+	var parsed conf.Config
+	if err := json.Unmarshal(jsonData, &parsed); err != nil {
+		t.Fatalf("failed to parse generated config: %v", err)
+	}
+	if _, err := parsed.Build(); err != nil {
+		t.Fatalf("current Xray rejected generated XHTTP config: %v", err)
 	}
 }
 

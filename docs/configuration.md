@@ -57,6 +57,22 @@ Applied to every tunnel unless the tunnel overrides the field.
 
 Only `vless://` URLs are accepted from subscription responses.
 
+#### VLESS URL compatibility
+
+The URL parser follows the current Xray share-link proposal:
+
+| Area | Supported values |
+|---|---|
+| Transport | `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, `kcp`/`mkcp` |
+| VLESS | `encryption`, `flow` |
+| XHTTP | `host`, `path`, `mode`, `extra` |
+| mKCP | `mtu`, `tti` |
+| TLS | `sni`, `fp`, `alpn`, `ech`, `pcs`, `vcn` |
+| REALITY | `pbk`, `sid`, `pqv`, `spx` |
+| Additional | `fm` (FinalMask JSON) |
+
+Legacy `type=http`, `h2`, and `h3` links are normalized to XHTTP `stream-one`. JSON-valued `extra` and `fm` parameters are validated before Xray starts.
+
 ### `tunnels` (list)
 
 Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).

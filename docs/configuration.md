@@ -1,6 +1,6 @@
 # Configuration
 
-Configuration sources, in priority order per tunnel: YAML `defaults:` → environment variables (`ApplyEnvDefaults`) → built-in constants in [`internal/metrics`](../internal/metrics/metrics.go).
+Configuration sources, from highest to lowest priority: per-tunnel YAML → YAML `defaults:` → the five supported env defaults (`CHECK_METHOD`, `IP_CHECK_URL`, `DOWNLOAD_URL`, `DOWNLOAD_TIMEOUT`, `DOWNLOAD_MIN_SIZE`) → built-in constants in [`internal/metrics`](../internal/metrics/metrics.go). Other environment variables configure the process rather than tunnel defaults.
 
 ## Environment variables
 
@@ -9,7 +9,7 @@ Configuration sources, in priority order per tunnel: YAML `defaults:` → enviro
 | `CONFIG_FILE` | `/app/config.yaml` | Path to the YAML config |
 | `LISTEN_ADDR` | `:9273` | HTTP server address |
 | `LOG_FORMAT` | `text` | `text` or `json` |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` (`warning`) / `error` |
 | `XRAY_LOG_LEVEL` | `warning` | Log level of the embedded Xray |
 | `DEBUG` | `false` | Deprecated — use `LOG_LEVEL=debug` |
 | `RUN_ONCE` | `false` | `true` → single check cycle, print metrics to stdout, exit |
@@ -40,8 +40,8 @@ Applied to every tunnel unless the tunnel overrides the field.
 | `check_url` | string | `https://www.google.com` | URL for `http` checks |
 | `check_interval` | duration | `30s` | Time between checks |
 | `check_timeout` | duration | `30s` | Per-check timeout |
-| `max_backoff` | duration | `5m` | Max backoff on repeated failures |
-| `backoff_multiplier` | float | `2.0` | Backoff growth factor |
+| `max_backoff` | duration | `5m` | Max backoff on repeated failures; must be a valid Go duration |
+| `backoff_multiplier` | float | `2.0` | Backoff growth factor; must be ≥ 1.0 |
 | `check_method` | string | `http` | `http` / `ip` / `download` |
 | `ip_check_url` | string | `https://api.ipify.org?format=text` | IP-echo URL for `ip` |
 | `download_url` | string | `https://proof.ovh.net/files/1Mb.dat` | File URL for `download` |
@@ -52,10 +52,12 @@ Applied to every tunnel unless the tunnel overrides the field.
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `url` | yes | — | Returns a base64-encoded or plain-text server list |
+| `url` | yes | — | Returns a plain-text or standard/URL-safe Base64 server list |
 | `update_interval` | no | `1h` | How often to refresh |
 
-Only `vless://` URLs are accepted from subscription responses.
+Only lowercase `vless://` URLs are accepted from subscription responses; other entries are skipped. Fetches use a 30-second timeout and read at most 10 MiB. A tunnel name comes from the URL fragment, or from `host:port` when the fragment is absent.
+
+The watcher cadence is calculated once at startup from the shortest configured `update_interval`. Adding the first subscription through hot reload fetches it once but does not start periodic refresh; changing intervals does not retune an existing watcher. Restart the exporter to apply either watcher change.
 
 #### VLESS URL compatibility
 
@@ -65,13 +67,16 @@ The URL parser follows the current Xray share-link proposal:
 |---|---|
 | Transport | `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, `kcp`/`mkcp` |
 | VLESS | `encryption`, `flow` |
-| XHTTP | `host`, `path`, `mode`, `extra` |
+| XHTTP | `host`, `path`, `mode` (`auto`, `packet-up`, `stream-up`, `stream-one`), `extra` (JSON object) |
+| gRPC | `serviceName` (required), `authority`, `mode` (`gun`, `guna`, `multi`), `multiMode=true` |
+| WebSocket / HTTPUpgrade | `host`, `path` |
 | mKCP | `mtu`, `tti` |
+| Security | `none`, `tls`, `reality` |
 | TLS | `sni`, `fp`, `alpn`, `ech`, `pcs`, `vcn` |
 | REALITY | `pbk`, `sid`, `pqv`, `spx` |
 | Additional | `fm` (FinalMask JSON) |
 
-Legacy `type=http`, `h2`, and `h3` links are normalized to XHTTP `stream-one`. JSON-valued `extra` and `fm` parameters are validated before Xray starts.
+Legacy `type=http`, `h2`, and `h3` links are normalized to XHTTP `stream-one`. For TLS and REALITY, `sni` defaults to the server address and `fp` defaults to `chrome`; REALITY requires `pbk`. The parser validates the presence of UUID and address, the port range, duplicate parameters, positive mKCP integers, and JSON-valued `extra`/`fm` before Xray starts.
 
 ### `tunnels` (list)
 
@@ -81,15 +86,19 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 |---|---|---|
 | `name` | string | Optional; defaults to `host:port`. Used in logs and as the `name` metric label |
 | `url` | string | VLESS connection URL |
-| `xray_config_file` | string | Path to a native Xray JSON config (outbound only; SOCKS5 inbound is injected) |
+| `xray_config_file` | string | Path to a native Xray JSON config. The exporter replaces `log` and `inbounds`; other sections are preserved |
 | `check_url` | string | Overrides `defaults.check_url` |
 | `check_interval` | duration | Overrides `defaults.check_interval` |
 | `check_timeout` | duration | Overrides `defaults.check_timeout` |
+| `max_backoff` | duration | Overrides `defaults.max_backoff`; must be a valid Go duration |
+| `backoff_multiplier` | float | Overrides `defaults.backoff_multiplier`; must be ≥ 1.0 |
 | `socks_port` | int | Optional; auto-assigned from 1080 if unset. Validated unique, range 1–65535 |
 | `check_method` | string | `http` / `ip` / `download` |
 | `ip_check_url` | string | IP-echo URL for `ip` |
 | `download_url` | string | File URL for `download` |
 | `download_timeout` | duration | Timeout for `download` |
 | `download_min_size` | int | Minimum bytes for `download` |
+
+Runtime support for a native JSON config is limited to protocols and transports registered by the Xray-core version pinned in `go.mod`. Metric labels are derived from the first outbound when it uses VLESS/VMess `vnext` or Trojan/Shadowsocks `servers`; otherwise labels may be empty.
 
 Duration format: Go duration strings (`30s`, `1m`, `1h30m`). At least one tunnel or subscription is required. See [`config.example.yaml`](../config.example.yaml) for a full example.

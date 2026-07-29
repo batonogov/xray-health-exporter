@@ -2,10 +2,12 @@
 // performs real SOCKS5 HTTP health-checks against tunnel instances.
 //
 // Three check methods are supported (configurable per tunnel via check_method):
-//   - "http" (default): GET the check_url and expect a 2xx/3xx status.
+//   - "http" (default): GET the check_url and expect status 200, 301, 302,
+//     or 307.
 //   - "ip": GET an IP-echo service through the proxy and compare the returned
-//     IP with the host's real public IP (resolved once at startup). The check
-//     passes if the proxy IP differs from the real IP.
+//     IP with the host's real public IP. Startup normally resolves the real IP
+//     once; if that fails, each ip check retries it. The check passes if the
+//     proxy IP differs from the real IP.
 //   - "download": download from a URL through the proxy and verify that at
 //     least download_min_size bytes are received.
 package checker
@@ -28,14 +30,14 @@ import (
 )
 
 // DefaultChecker is the production HealthChecker that performs real SOCKS5
-// HTTP health-checks. The real public IP is resolved once at startup via
-// ResolveRealIP and stored for ip-method checks.
+// HTTP health-checks. The real public IP is normally resolved once at startup
+// via ResolveRealIP and stored for ip-method checks.
 type DefaultChecker struct {
 	realIP string
 }
 
 // NewDefaultChecker creates a DefaultChecker with the pre-resolved real public
-// IP. Pass an empty string to resolve lazily on first ip-method check.
+// IP. Pass an empty string to retry resolution on each ip-method check.
 func NewDefaultChecker(realIP string) DefaultChecker {
 	return DefaultChecker{realIP: realIP}
 }
@@ -162,7 +164,7 @@ func PerformCheck(ti *tunnel.TunnelInstance) tunnel.CheckResult {
 // checkByIP verifies that traffic is actually routed through the proxy by
 // comparing the IP returned via the proxy against the host's real public IP.
 // The check succeeds if the proxy IP differs from the real IP. If the real IP
-// was not resolved at startup, it is resolved lazily on the first call.
+// was not resolved at startup, resolution is retried for each call.
 func (dc DefaultChecker) checkByIP(ti *tunnel.TunnelInstance) tunnel.CheckResult {
 	realIP := dc.realIP
 	if realIP == "" {

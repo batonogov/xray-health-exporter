@@ -9,13 +9,16 @@
 Prometheus exporter для мониторинга туннелей Xray-core.
 
 **Особенности:**
+
 - Поддержка множественных туннелей в одном экземпляре
 - Актуальные VLESS URL: RAW/TCP, XHTTP, gRPC, WebSocket, HTTPUpgrade и mKCP
-- Нативный Xray JSON-конфиг (`xray_config_file`) — любые протоколы и транспорты Xray-core
-- Подписки (subscription URL) — автоматическое получение и обновление списка серверов
+- Нативный Xray JSON-конфиг (`xray_config_file`) для протоколов и транспортов, зарегистрированных во встроенной закреплённой версии Xray-core
+- VLESS-подписки — автоматическое получение и обновление списка серверов
+- HTTP-, IP- и download-проверки с измерением TTFB
 - Конфигурация через YAML файл с горячей перезагрузкой
 - Автоматическое распределение SOCKS портов
 - Индивидуальные настройки для каждого туннеля
+- Опциональные Pushgateway, Kubernetes leader election и однократный запуск
 
 ## Установка
 
@@ -29,6 +32,10 @@ chmod +x xray-health-exporter-linux-amd64
 # Linux arm64
 wget https://github.com/batonogov/xray-health-exporter/releases/latest/download/xray-health-exporter-linux-arm64
 chmod +x xray-health-exporter-linux-arm64
+
+# Linux arm (32-bit)
+wget https://github.com/batonogov/xray-health-exporter/releases/latest/download/xray-health-exporter-linux-arm
+chmod +x xray-health-exporter-linux-arm
 ```
 
 **Docker:**
@@ -69,7 +76,7 @@ tunnels:
   - name: "Server 1"
     url: "vless://uuid@host1:443?type=tcp&security=reality&pbk=...&sni=google.com"
 
-  # Вариант 2: нативный Xray JSON-конфиг (любой протокол)
+  # Вариант 2: нативный Xray JSON-конфиг
   - name: "Server 2"
     xray_config_file: "/etc/xray/server2.json"
 ```
@@ -85,21 +92,27 @@ docker run --rm \
   -p 9273:9273 \
   ghcr.io/batonogov/xray-health-exporter:latest
 
-# Локально (требуется Go 1.26+)
-export CONFIG_FILE=./config.yaml
-./xray-health-exporter-linux-amd64
+# Скачанный бинарник
+CONFIG_FILE=./config.yaml ./xray-health-exporter-linux-amd64
+
+# Из исходников (требуется Go 1.26+)
+CONFIG_FILE=./config.yaml go run ./cmd/exporter
 ```
 
 ## Метрики
 
-Все метрики содержат labels: `name`, `server`, `security`, `sni`
+Все метрики `xray_tunnel_*` содержат labels `name`, `server`, `security` и `sni`. Основные метрики:
 
 - `xray_tunnel_up{name, server, security, sni}` - статус туннеля (1=работает, 0=не работает)
 - `xray_tunnel_latency_seconds{name, server, security, sni}` - латентность TTFB (время до первого байта)
+- `xray_tunnel_latency_histogram_seconds{name, server, security, sni}` - гистограмма TTFB
 - `xray_tunnel_check_total{name, server, security, sni, result}` - счётчик проверок
 - `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp последней успешной проверки
 - `xray_tunnel_http_status{name, server, security, sni}` - HTTP статус код при проверке
+- `xray_tunnel_error_total{name, server, security, sni, reason}` - счётчик ошибок по категориям
 - `xray_exporter_leader` - 1 если этот инстанс активно опрашивает туннели (лидер или leader election выключен), 0 иначе
+
+Полный список метрик, типов, labels, bucket-ов и причин ошибок приведён в [`docs/metrics.md`](docs/metrics.md).
 
 **Пример метрик:**
 ```
@@ -113,8 +126,9 @@ xray_tunnel_http_status{name="Server 1",server="example.com:443",security="reali
 > 💡 Label `name` содержит имя туннеля из конфига (или `host:port` если имя не указано). Labels позволяют мониторить несколько серверов одновременно
 
 **Endpoints:**
+
 - `/metrics` - Prometheus метрики
-- `/health` - healthcheck
+- `/health` - healthcheck; всегда открыт, даже если `/metrics` защищён Basic Auth
 
 ## Конфигурация
 
@@ -140,7 +154,7 @@ tunnels:
   # Современный VLESS + XHTTP + Reality
   - url: "vless://uuid@host:443?type=xhttp&security=reality&pbk=...&sni=example.com&fp=chrome&path=%2Fapi&mode=stream-up&extra=%7B%7D"
 
-  # Вариант 2: нативный Xray JSON-конфиг (любой протокол/транспорт)
+  # Вариант 2: нативный Xray JSON-конфиг
   - name: "VMess Server"
     xray_config_file: "/etc/xray/vmess.json"
 
@@ -160,10 +174,12 @@ tunnels:
 **Параметры туннеля:**
 - `name` (опционально) - имя туннеля для логов. Если не указано, используется `host:port`
 - `url` - VLESS URL подключения (взаимоисключающе с `xray_config_file`)
-- `xray_config_file` - путь к нативному Xray JSON-конфигу (взаимоисключающе с `url`). Пользователь задаёт только outbound, SOCKS5 inbound инжектится автоматически
+- `xray_config_file` - путь к нативному Xray JSON-конфигу (взаимоисключающе с `url`). Экспортёр заменяет секции `log` и `inbounds` своими настройками; остальные секции верхнего уровня, включая `outbounds`, сохраняются
 - `check_url` (опционально) - URL для проверки доступности
 - `check_interval` (опционально) - интервал между проверками
 - `check_timeout` (опционально) - таймаут проверки
+- `max_backoff` (опционально) - максимальный интервал после повторных ошибок (по умолчанию `5m`)
+- `backoff_multiplier` (опционально) - множитель роста интервала после ошибок, не меньше `1.0` (по умолчанию `2.0`)
 - `check_method` (опционально) - метод проверки: `http` (по умолчанию), `ip` или `download` (см. ниже)
 - `ip_check_url` (опционально) - URL сервиса определения IP для метода `ip` (по умолчанию: `https://api.ipify.org?format=text`)
 - `download_url` (опционально) - URL файла для метода `download` (по умолчанию: `https://proof.ovh.net/files/1Mb.dat`)
@@ -172,28 +188,28 @@ tunnels:
 - `socks_port` (опционально) - кастомный SOCKS5 порт для туннеля. Должен быть в диапазоне 1-65535. Дублирование портов между туннелями не допускается. Если не указан, порты назначаются автоматически начиная с 1080
 
 **Параметры подписки:**
-- `url` (обязательно) - URL подписки (возвращает base64-encoded или plain text список серверов)
+- `url` (обязательно) - URL подписки (возвращает обычный текст либо Base64 в стандартном или URL-safe варианте)
 - `update_interval` (опционально) - интервал обновления (по умолчанию `1h`)
 
-VLESS URL разбираются по актуальному share-link формату Xray. Поддерживаются транспорты `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade` и `kcp`/`mkcp`. Старый `type=http` преобразуется в XHTTP `stream-one`. Сохраняются современные параметры `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `alpn`/`ech`/`pcs`/`vcn` и Reality `pbk`/`sid`/`pqv`/`spx`.
+VLESS URL разбираются по актуальному share-link формату Xray. Поддерживаются транспорты `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade` и `kcp`/`mkcp`. Старые `type=http`, `h2` и `h3` преобразуются в XHTTP `stream-one`. Поддерживаются параметры `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, gRPC `serviceName`/`authority`/`mode`/`multiMode`, WebSocket и HTTPUpgrade `host`/`path`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `sni`/`fp`/`alpn`/`ech`/`pcs`/`vcn` и REALITY `pbk`/`sid`/`pqv`/`spx`. Правила валидации и значения по умолчанию приведены в [`docs/configuration.md`](docs/configuration.md).
 
 **Примечания:**
 - Должен быть указан хотя бы один туннель или подписка
-- Из ответов подписок принимаются VLESS URL; список может быть обычным текстом или Base64
+- Из ответов подписок принимаются только записи с `vless://` в нижнем регистре; список может быть обычным текстом или Base64
+- Период обновления подписок определяется при старте по наименьшему `update_interval`; горячее добавление первой подписки загрузит её один раз, но для периодического обновления и применения нового интервала нужен перезапуск процесса
 - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082...), или можно задать явно через `socks_port` для каждого туннеля
 - Формат duration: "30s", "1m", "1h30m"
-- Если параметр не указан в туннеле, используется значение из `defaults`
-- Если не указан в `defaults`, используется глобальное значение по умолчанию
+- Приоритет настроек: значение туннеля в YAML, затем YAML `defaults`, поддерживаемые env defaults и встроенные значения
 
 ### Методы проверки
 
 Доступны три метода проверки, настраиваемые для каждого туннеля через `check_method` (или глобально через `defaults.check_method`):
 
-- **`http`** (по умолчанию) - GET-запрос к `check_url` с ожиданием статус-кода 2xx/3xx. Текущее поведение.
-- **`ip`** - GET-запрос к сервису определения IP через прокси, полученный IP сравнивается с реальным публичным IP хоста (определяется один раз при старте). Проверка успешна, если IP через прокси отличается от реального.
-- **`download`** - Скачивание файла через прокси, проверка что получено не менее `download_min_size` байт в течение `download_timeout`.
+- **`http`** (по умолчанию) - GET-запрос к `check_url`; успешны статусы `200`, `301`, `302` и `307`.
+- **`ip`** - GET-запрос к сервису определения IP через прокси со статусом `200`, затем полученный IP сравнивается с реальным публичным IP хоста. Проверка успешна, если IP различаются.
+- **`download`** - Ответ должен иметь статус `200`; затем через прокси загружается не менее `download_min_size` байт за `download_timeout`.
 
-Все три метода измеряют latency как TTFB (time to first byte).
+Все три метода измеряют latency успешной проверки как TTFB (time to first byte). Точное поведение описано в [`docs/check-methods.md`](docs/check-methods.md).
 
 ```yaml
 defaults:
@@ -214,7 +230,7 @@ tunnels:
 | `CONFIG_FILE` | `/app/config.yaml` | Путь к YAML конфигурации |
 | `LISTEN_ADDR` | `:9273` | Адрес HTTP сервера |
 | `LOG_FORMAT` | `text` | Формат логов: `text` или `json` |
-| `LOG_LEVEL` | `info` | Уровень логирования: `debug`, `info`, `warn`, `error` |
+| `LOG_LEVEL` | `info` | Уровень логирования: `debug`, `info`, `warn`/`warning`, `error` |
 | `XRAY_LOG_LEVEL` | `warning` | Уровень логов Xray |
 | `DEBUG` | `false` | (Deprecated) Детальный вывод, используйте `LOG_LEVEL=debug` |
 | `LEADER_ELECTION` | `false` | Включить k8s leader election (см. ниже) |
@@ -227,6 +243,12 @@ tunnels:
 | `DOWNLOAD_TIMEOUT` | `60s` | Таймаут для метода `download` |
 | `DOWNLOAD_MIN_SIZE` | `51200` | Минимум байт для метода `download` |
 | `RUN_ONCE` | `false` | Если `true` — выполнить один цикл проверок, вывести метрики в stdout и завершиться (см. ниже) |
+| `METRICS_PROTECTED` | `false` | Включить Basic Auth для `/metrics`; `/health` остаётся открытым |
+| `METRICS_USERNAME` | `metricsUser` | Имя пользователя Basic Auth для `/metrics` |
+| `METRICS_PASSWORD` | _(обязателен при защите)_ | Пароль Basic Auth для `/metrics` |
+| `METRICS_PUSH_URL` | _(пусто)_ | Полный URL Pushgateway; может содержать `user:pass@`. Пустое значение отключает push |
+| `METRICS_PUSH_INTERVAL` | мин. `check_interval`, или `30s` | Интервал отправки (строка длительности Go) |
+| `METRICS_INSTANCE` | `os.Hostname()` | Значение label-группировки `instance` для отправляемых метрик |
 
 ### Режим Run-Once
 
@@ -241,13 +263,10 @@ tunnels:
 **Код выхода:** `0` если все туннели работают, `1` если хотя бы один недоступен или произошла ошибка.
 
 ```bash
-RUN_ONCE=true CONFIG_FILE=./config.yaml go run .
+RUN_ONCE=true CONFIG_FILE=./config.yaml go run ./cmd/exporter
 ```
 
 > **Примечание:** В режиме run-once HTTP-сервер, наблюдатель конфигурации и наблюдатель подписок **не запускаются**. Leader election игнорируется — проверка всегда выполняется локально.
-| `METRICS_PUSH_URL` | _(пусто)_ | Полный URL Pushgateway (напр. `https://user:pass@pushgateway:9091`). Если задан, метрики периодически отправляются в Pushgateway в дополнение к pull-эндпоинту `/metrics`. Пусто — push отключен (по умолчанию). |
-| `METRICS_PUSH_INTERVAL` | мин. `check_interval`, или `30s` | Интервал отправки (строка длительности Go, напр. `30s`, `1m`) |
-| `METRICS_INSTANCE` | `os.Hostname()` | Значение label-группировки `instance` для отправляемых метрик |
 
 ### Prometheus Pushgateway
 
@@ -417,7 +436,7 @@ task build
 
 **Автоматическое тестирование в Pull Requests:**
 - 🧪 Запуск всех тестов при каждом PR
-- 📊 Проверка покрытия кода (минимум 65%)
+- 📊 Проверка покрытия кода (минимум 75%)
 - 🔍 Проверка форматирования кода
 - 🏗️ Проверка сборки
 - 💬 Автоматический комментарий с результатами в PR

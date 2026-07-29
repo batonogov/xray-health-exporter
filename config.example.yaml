@@ -6,8 +6,16 @@ defaults:
   check_url: "https://www.google.com"
   check_interval: "30s"
   check_timeout: "30s"
+  max_backoff: "5m"
+  backoff_multiplier: 2.0
+  check_method: "http" # http, ip или download
+  ip_check_url: "https://api.ipify.org?format=text"
+  download_url: "https://proof.ovh.net/files/1Mb.dat"
+  download_timeout: "60s"
+  download_min_size: 51200
 
-# Подписки могут возвращать обычный текст или Base64 со ссылками vless://
+# Подписки могут возвращать обычный текст или standard/URL-safe Base64.
+# Из ответа принимаются только ссылки vless://
 subscriptions:
   - url: "https://provider.example.com/subscribe?token=replace-me"
     update_interval: "1h"
@@ -42,8 +50,14 @@ tunnels:
   - name: "XHTTP Server"
     url: "vless://your-uuid@example6.com:443?type=xhttp&security=reality&pbk=your-public-key&sni=example.com&fp=chrome&path=%2Fapi&mode=stream-up&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D"
 
-  # Нативный Xray JSON: поддерживает любой протокол/транспорт Xray-core.
-  # Пользовательские inbounds заменяются локальным SOCKS5 inbound.
+  # gRPC + TLS; serviceName обязателен для gRPC
+  - name: "gRPC Server"
+    url: "vless://your-uuid@example7.com:443?type=grpc&security=tls&sni=example7.com&fp=chrome&serviceName=grpc-service&authority=example7.com"
+
+  # Нативный Xray JSON использует протоколы/транспорты, зарегистрированные
+  # во встроенной версии Xray-core из go.mod. Секции log и inbounds заменяются:
+  # экспортёр добавляет собственный log и один локальный SOCKS5 inbound.
+  # Остальные секции верхнего уровня, включая outbounds, сохраняются.
   - name: "Native Xray outbound"
     xray_config_file: "/etc/xray/outbound.json"
 

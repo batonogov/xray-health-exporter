@@ -9,13 +9,16 @@
 Prometheus exporter for monitoring Xray-core tunnels.
 
 **Features:**
+
 - Multiple tunnel support in a single instance
 - Current VLESS URLs: RAW/TCP, XHTTP, gRPC, WebSocket, HTTPUpgrade, and mKCP
-- Native Xray JSON config (`xray_config_file`) — any protocol and transport supported by Xray-core
-- Subscriptions (subscription URL) — automatic fetching and updating of server lists
+- Native Xray JSON config (`xray_config_file`) for protocols and transports registered by the pinned Xray-core
+- VLESS subscriptions — automatic fetching and updating of server lists
+- HTTP, public-IP, and download health checks with TTFB latency
 - YAML configuration with hot reload
 - Automatic SOCKS port allocation
 - Per-tunnel settings
+- Optional Pushgateway delivery, Kubernetes leader election, and one-shot execution
 
 ## Installation
 
@@ -29,6 +32,10 @@ chmod +x xray-health-exporter-linux-amd64
 # Linux arm64
 wget https://github.com/batonogov/xray-health-exporter/releases/latest/download/xray-health-exporter-linux-arm64
 chmod +x xray-health-exporter-linux-arm64
+
+# Linux arm (32-bit)
+wget https://github.com/batonogov/xray-health-exporter/releases/latest/download/xray-health-exporter-linux-arm
+chmod +x xray-health-exporter-linux-arm
 ```
 
 **Docker:**
@@ -69,7 +76,7 @@ tunnels:
   - name: "Server 1"
     url: "vless://uuid@host1:443?type=tcp&security=reality&pbk=...&sni=google.com"
 
-  # Option 2: native Xray JSON config (any protocol)
+  # Option 2: native Xray JSON config
   - name: "Server 2"
     xray_config_file: "/etc/xray/server2.json"
 ```
@@ -85,21 +92,27 @@ docker run --rm \
   -p 9273:9273 \
   ghcr.io/batonogov/xray-health-exporter:latest
 
-# Locally (requires Go 1.26+)
-export CONFIG_FILE=./config.yaml
-./xray-health-exporter-linux-amd64
+# Downloaded binary
+CONFIG_FILE=./config.yaml ./xray-health-exporter-linux-amd64
+
+# From source (requires Go 1.26+)
+CONFIG_FILE=./config.yaml go run ./cmd/exporter
 ```
 
 ## Metrics
 
-All metrics contain labels: `name`, `server`, `security`, `sni`
+All `xray_tunnel_*` metrics contain labels `name`, `server`, `security`, and `sni`. Key metrics:
 
 - `xray_tunnel_up{name, server, security, sni}` - tunnel status (1=up, 0=down)
 - `xray_tunnel_latency_seconds{name, server, security, sni}` - TTFB (time to first byte) latency
+- `xray_tunnel_latency_histogram_seconds{name, server, security, sni}` - TTFB histogram
 - `xray_tunnel_check_total{name, server, security, sni, result}` - check counter
 - `xray_tunnel_last_success_timestamp{name, server, security, sni}` - timestamp of the last successful check
 - `xray_tunnel_http_status{name, server, security, sni}` - HTTP status code from the check
+- `xray_tunnel_error_total{name, server, security, sni, reason}` - categorized error counter
 - `xray_exporter_leader` - 1 if this instance is actively probing tunnels (leader or leader election is disabled), 0 otherwise
+
+See [`docs/metrics.md`](docs/metrics.md) for the authoritative metric list, types, labels, buckets, and error reasons.
 
 **Example metrics:**
 ```
@@ -113,8 +126,9 @@ xray_tunnel_http_status{name="Server 1",server="example.com:443",security="reali
 > The `name` label contains the tunnel name from the config (or `host:port` if no name is specified). Labels allow monitoring multiple servers simultaneously
 
 **Endpoints:**
+
 - `/metrics` - Prometheus metrics
-- `/health` - healthcheck
+- `/health` - health check; always open even when `/metrics` uses Basic Auth
 
 ## Configuration
 
@@ -140,7 +154,7 @@ tunnels:
   # Current VLESS + XHTTP + Reality
   - url: "vless://uuid@host:443?type=xhttp&security=reality&pbk=...&sni=example.com&fp=chrome&path=%2Fapi&mode=stream-up&extra=%7B%7D"
 
-  # Option 2: native Xray JSON config (any protocol/transport)
+  # Option 2: native Xray JSON config
   - name: "VMess Server"
     xray_config_file: "/etc/xray/vmess.json"
 
@@ -160,10 +174,12 @@ tunnels:
 **Tunnel parameters:**
 - `name` (optional) - tunnel name for logs. If not specified, `host:port` is used
 - `url` - VLESS connection URL (mutually exclusive with `xray_config_file`)
-- `xray_config_file` - path to a native Xray JSON config (mutually exclusive with `url`). The user provides only the outbound; a SOCKS5 inbound is injected automatically
+- `xray_config_file` - path to a native Xray JSON config (mutually exclusive with `url`). The exporter replaces its `log` and `inbounds` sections with exporter-controlled settings; other top-level sections, including `outbounds`, are preserved
 - `check_url` (optional) - URL for availability checks
 - `check_interval` (optional) - interval between checks
 - `check_timeout` (optional) - check timeout
+- `max_backoff` (optional) - maximum interval after repeated failures (default: `5m`)
+- `backoff_multiplier` (optional) - failure-backoff growth factor, at least `1.0` (default: `2.0`)
 - `check_method` (optional) - health-check method: `http` (default), `ip`, or `download` (see below)
 - `ip_check_url` (optional) - IP-echo URL for the `ip` method (default: `https://api.ipify.org?format=text`)
 - `download_url` (optional) - file URL for the `download` method (default: `https://proof.ovh.net/files/1Mb.dat`)
@@ -172,28 +188,28 @@ tunnels:
 - `socks_port` (optional) - custom SOCKS5 port for this tunnel. Must be in range 1-65535. Duplicate ports across tunnels are not allowed. If not specified, ports are auto-assigned starting from 1080
 
 **Subscription parameters:**
-- `url` (required) - subscription URL (returns a base64-encoded or plain text server list)
+- `url` (required) - subscription URL (returns a plain-text or standard/URL-safe Base64 server list)
 - `update_interval` (optional) - update interval (default: `1h`)
 
-VLESS URLs follow the current Xray share-link format. Supported transports are `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, and `kcp`/`mkcp`. Legacy `type=http` is converted to XHTTP `stream-one`. Current parameters are preserved, including `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `alpn`/`ech`/`pcs`/`vcn`, and Reality `pbk`/`sid`/`pqv`/`spx`.
+VLESS URLs follow the current Xray share-link format. Supported transports are `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, and `kcp`/`mkcp`. Legacy `type=http`, `h2`, and `h3` are converted to XHTTP `stream-one`. Supported parameters include `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, gRPC `serviceName`/`authority`/`mode`/`multiMode`, WebSocket and HTTPUpgrade `host`/`path`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `sni`/`fp`/`alpn`/`ech`/`pcs`/`vcn`, and REALITY `pbk`/`sid`/`pqv`/`spx`. See [`docs/configuration.md`](docs/configuration.md) for validation rules and defaults.
 
 **Notes:**
 - At least one tunnel or subscription must be specified
-- Subscription responses accept VLESS URLs in plain-text or Base64 lists
+- Subscription responses accept only lowercase `vless://` entries in plain-text or Base64 lists
+- The subscription refresh cadence is set at startup from the shortest `update_interval`; adding the first subscription through YAML hot reload fetches it once, but periodic refresh and interval changes require a process restart
 - SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
 - Duration format: "30s", "1m", "1h30m"
-- If a parameter is not specified for a tunnel, the value from `defaults` is used
-- If not specified in `defaults`, the global default value is used
+- Configuration priority is per-tunnel YAML, then YAML `defaults`, supported environment defaults, and finally built-in defaults
 
 ### Check methods
 
 Three health-check methods are available, configurable per tunnel via `check_method` (or globally via `defaults.check_method`):
 
-- **`http`** (default) - GET the `check_url` and expect a 2xx/3xx status code. This is the original behaviour.
-- **`ip`** - GET an IP-echo service through the proxy and compare the returned IP with the host's real public IP (resolved once at startup). The check passes if the proxy IP differs from the real IP, confirming traffic actually routes through the proxy.
-- **`download`** - Download a file through the proxy and verify at least `download_min_size` bytes are received within `download_timeout`.
+- **`http`** (default) - GET the `check_url`; status `200`, `301`, `302`, or `307` passes.
+- **`ip`** - GET an IP-echo service through the proxy and require status `200`, then compare the returned IP with the host's real public IP. The check passes if the IPs differ, confirming traffic actually routes through the proxy.
+- **`download`** - Require status `200`, then download at least `download_min_size` bytes through the proxy within `download_timeout`.
 
-All three methods measure latency as TTFB (time to first byte).
+All three methods measure successful-check latency as TTFB (time to first byte). See [`docs/check-methods.md`](docs/check-methods.md) for exact pass/fail behavior.
 
 ```yaml
 defaults:
@@ -214,7 +230,7 @@ tunnels:
 | `CONFIG_FILE` | `/app/config.yaml` | Path to YAML configuration |
 | `LISTEN_ADDR` | `:9273` | HTTP server address |
 | `LOG_FORMAT` | `text` | Log format: `text` or `json` |
-| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`/`warning`, `error` |
 | `XRAY_LOG_LEVEL` | `warning` | Xray log level |
 | `DEBUG` | `false` | (Deprecated) Verbose output, use `LOG_LEVEL=debug` instead |
 | `LEADER_ELECTION` | `false` | Enable k8s leader election (see below) |
@@ -227,6 +243,12 @@ tunnels:
 | `DOWNLOAD_TIMEOUT` | `60s` | Timeout for the `download` method |
 | `DOWNLOAD_MIN_SIZE` | `51200` | Minimum bytes for the `download` method |
 | `RUN_ONCE` | `false` | If `true`, run one check cycle, print metrics to stdout, and exit (see below) |
+| `METRICS_PROTECTED` | `false` | Enable Basic Auth on `/metrics`; `/health` stays open |
+| `METRICS_USERNAME` | `metricsUser` | Basic Auth username for `/metrics` |
+| `METRICS_PASSWORD` | _(required when protected)_ | Basic Auth password for `/metrics` |
+| `METRICS_PUSH_URL` | _(empty)_ | Full Pushgateway URL; may include `user:pass@`. Empty disables push |
+| `METRICS_PUSH_INTERVAL` | min `check_interval`, or `30s` | Interval between pushes (Go duration string) |
+| `METRICS_INSTANCE` | `os.Hostname()` | Value of the `instance` grouping label for pushed metrics |
 
 ### Run-Once Mode
 
@@ -241,13 +263,10 @@ Set `RUN_ONCE=true` to execute a single check cycle and exit — useful for CI p
 **Exit code:** `0` if all tunnels are up, `1` if any tunnel is down or an error occurred.
 
 ```bash
-RUN_ONCE=true CONFIG_FILE=./config.yaml go run .
+RUN_ONCE=true CONFIG_FILE=./config.yaml go run ./cmd/exporter
 ```
 
 > **Note:** In run-once mode the HTTP server, config watcher, and subscription watcher are **not** started. Leader election is ignored — the check always runs locally.
-| `METRICS_PUSH_URL` | _(empty)_ | Full Pushgateway URL (e.g. `https://user:pass@pushgateway:9091`). When set, metrics are periodically pushed to Pushgateway in addition to the `/metrics` pull endpoint. Empty disables push (default). |
-| `METRICS_PUSH_INTERVAL` | min `check_interval`, or `30s` | Interval between pushes (Go duration string, e.g. `30s`, `1m`) |
-| `METRICS_INSTANCE` | `os.Hostname()` | Value of the `instance` grouping label for pushed metrics |
 
 ### Prometheus Pushgateway
 
@@ -417,7 +436,7 @@ task build
 
 **Automated testing in Pull Requests:**
 - All tests run on every PR
-- Code coverage check (minimum 65%)
+- Code coverage check (minimum 75%)
 - Code formatting check
 - Build check
 - Automatic comment with results in PR

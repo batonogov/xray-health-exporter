@@ -1,6 +1,6 @@
 # Documentation
 
-Deep technical reference for xray-health-exporter. For operational/agent guidance see [`../AGENTS.md`](../AGENTS.md); for user-facing usage see [`../README.md`](../README.md).
+Deep technical reference for xray-health-exporter. For operational/agent guidance see [`../AGENTS.md`](../AGENTS.md); for user-facing usage see [`../README.md`](../README.md) (English) or [`../README.ru.md`](../README.ru.md) (Russian). The compact LLM index is [`../llms.txt`](../llms.txt).
 
 | Document | Contents |
 |---|---|

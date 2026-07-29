@@ -11,11 +11,11 @@ This file is the canonical source of agent guidance. `CLAUDE.md` is a thin point
 
 Prometheus exporter on **Go 1.26+** for monitoring Xray-core tunnels. Supports VLESS URLs, native Xray JSON configs (`xray_config_file`), and subscription URLs for automatic server fetching. Uses **embedded Xray-core** (`github.com/xtls/xray-core`) as a library — it does **not** spawn an external process. For each tunnel a local SOCKS5 inbound is raised, and health checks run through it.
 
-Three selectable check methods per tunnel via `check_method`: `http` (default, GET + 2xx/3xx), `ip` (IP-echo through the proxy compared to the host's real public IP), `download` (≥ `download_min_size` bytes received). Latency is **TTFB** (time to first byte) in all methods, instrumented via `net/http/httptrace`.
+Three selectable check methods per tunnel via `check_method`: `http` (default, GET + accepted status), `ip` (IP-echo through the proxy compared to the host's real public IP), `download` (≥ `download_min_size` bytes received). The `http` method accepts status `200`, `301`, `302`, or `307`; `ip` and `download` require status `200`. Latency is **TTFB** (time to first byte) in all methods, instrumented via `net/http/httptrace`.
 
 Run modes: daemon (HTTP server with `/metrics` + `/health`), optional push to Prometheus Pushgateway, optional Kubernetes leader election, and `RUN_ONCE` for a single check cycle (CI/scripts).
 
-Entry point is **`./cmd/exporter`** (not `.`). Current release: **v1.6.0**.
+Entry point is **`./cmd/exporter`** (not `.`). Release versions are managed by release-please; use `.release-please-manifest.json`, `CHANGELOG.md`, or the latest GitHub release instead of hardcoding the current version in documentation.
 
 ## Build and test
 
@@ -26,10 +26,12 @@ task build          # go build -ldflags="-X main.Version=dev -X main.Commit=dev"
 task test           # go test -v -cover ./...
 task test-race      # with the race detector
 task test-coverage  # writes coverage.out + prints per-function coverage
-task ci-test        # full CI run: fmt + build + race + coverage
+task ci-test        # local CI-like run: fmt + build + race + coverage summary
 task run            # go run ./cmd/exporter
 task docker-build
 ```
+
+GitHub Actions additionally enforces the 75% coverage threshold and builds the Docker image; `task ci-test` does not.
 
 Run a single test:
 
@@ -47,7 +49,7 @@ Local run: `CONFIG_FILE=./config.yaml go run ./cmd/exporter` (listens on `:9273`
 - **Conventional commits**: the repo uses release-please (`release-type: go`). Commit types `docs`/`ci`/`test`/`style`/`build` are hidden from the CHANGELOG.
 - **Versioning**: version + commit are injected via `-ldflags="-X main.Version=... -X main.Commit=..."` (see `task build`).
 - **Secrets**: never commit `config.yaml` (gitignored) or any credentials. Use [`config.example.yaml`](./config.example.yaml) as a template. Pre-commit runs gitleaks + private-key detection.
-- **Language**: source comments, commit messages, and PR descriptions in English. Prose project docs are in Russian.
+- **Language**: source comments, commit messages, PR descriptions, `README.md`, and `docs/*.md` are in English. Keep the Russian user-facing mirrors (`README.ru.md` and comments in `config.example.yaml`) aligned whenever behavior changes.
 
 ## Architecture (brief)
 
@@ -72,11 +74,12 @@ See [`docs/architecture.md`](./docs/architecture.md) for the full package map, k
 ## Gotchas (read before touching tunnel/Xray code)
 
 - **SOCKS ports** are auto-assigned starting at 1080 (1080, 1081, …). Do not hardcode a port unless a tunnel sets an explicit `socks_port` (validated unique, range 1–65535).
-- **Embedded Xray**: `CreateXrayConfig` builds raw JSON parsed via `serial.LoadJSONConfig`. Xray config-schema changes can break compatibility — check the pinned version in `go.mod`.
+- **Embedded Xray**: `CreateXrayConfig` builds raw JSON; `StartXray` unmarshals it into `conf.Config`, calls `Build`, creates `core.Instance`, and starts it. Xray config-schema changes can break compatibility — check the pinned version in `go.mod`.
 - **`WaitForSOCKSPort`** gives Xray time to start before the first check; respect it in new check paths.
 - **Hot reload** compares old vs new tunnels; unchanged instances are reused. Do **not** recreate an Xray instance unnecessarily — ports can conflict. Metrics of removed tunnels are cleaned via `CleanupRemovedTunnelMetrics`.
-- **`xray_config_file`**: the user supplies only the outbound; a SOCKS5 inbound is injected automatically. Supports all current and future Xray protocols/transports.
-- **Subscriptions**: updated periodically by the minimum `update_interval` across all subscriptions. Server-list changes rebuild tunnels like hot reload. Only `vless://` URLs are accepted from subscriptions. Adding subscriptions via hot config reload does **not** start a new watcher — a restart is required.
+- **`xray_config_file`**: the full JSON is loaded, but its `log` and `inbounds` sections are replaced with exporter-controlled settings (including one local SOCKS5 inbound). Other top-level sections, including `outbounds`, are preserved. Runtime support is limited to protocols and transports registered by the Xray-core version pinned in `go.mod`.
+- **VLESS share links**: accepted transports are `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, and `kcp`/`mkcp`. Legacy `http`/`h2`/`h3` aliases normalize to XHTTP `stream-one`; unsupported transports, security values, duplicate query parameters, and malformed JSON parameters are rejected.
+- **Subscriptions**: the watcher interval is calculated once at startup from the minimum `update_interval`. Server-list changes rebuild tunnels like hot reload. Only `vless://` URLs are accepted. Adding the first subscription via hot reload fetches it once but does **not** start a watcher; changing intervals or adding a shorter interval does not retune the existing watcher. Restart to apply either watcher change.
 - **`/metrics`** can be protected by Basic Auth (`METRICS_PROTECTED=true`); credentials are compared via `crypto/subtle.ConstantTimeCompare`. `/health` is always open (for k8s probes).
 - **Pushgateway push** is complementary: the pull `/metrics` endpoint stays available; push runs only on the leader (fail-closed via the `xray_exporter_leader` gauge).
 

@@ -156,7 +156,7 @@ func main() {
 	}()
 
 	// Resolve the host's real public IP once for ip-method checks.
-	// If this fails, the checker will resolve lazily on first ip check.
+	// If this fails, each ip check will retry the lookup.
 	ipCheckURL := os.Getenv("IP_CHECK_URL")
 	if ipCheckURL == "" {
 		ipCheckURL = metrics.DefaultIPCheckURL
@@ -165,7 +165,7 @@ func main() {
 	realIP, ipErr := checker.ResolveRealIP(ipResolveCtx, ipCheckURL)
 	ipResolveCancel()
 	if ipErr != nil {
-		slog.Warn("failed to resolve real IP at startup, ip check method will resolve lazily", "error", ipErr)
+		slog.Warn("failed to resolve real IP at startup, each ip check will retry", "error", ipErr)
 	}
 
 	probeChecker := checker.NewDefaultChecker(realIP)

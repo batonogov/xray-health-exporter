@@ -164,6 +164,6 @@ jobs:
               ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             ```
 
-            Туннели можно задавать тремя способами: VLESS URL, нативный Xray JSON-конфиг (`xray_config_file`) и subscription URL.
+            Туннели можно задавать тремя способами: VLESS URL, нативный Xray JSON-конфиг (`xray_config_file`) и subscription URL со списком VLESS-ссылок.
             См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.
           files: artifacts/*/xray-health-exporter-*

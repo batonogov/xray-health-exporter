@@ -1,17 +1,31 @@
 # xray-health-exporter
 
-> Prometheus exporter (Go 1.26+) for monitoring Xray-core tunnels (VLESS/VMess/Trojan/Shadowsocks).
-> Embeds Xray-core as a library — no external process. Three per-tunnel check methods
-> (http / ip / download) measured as TTFB. Supports hot-reload YAML config, subscriptions,
-> Pushgateway push, Kubernetes leader election, and a RUN_ONCE mode for CI/scripts.
+> Prometheus exporter (Go 1.26+) for monitoring Xray-core tunnels.
+> Accepts VLESS share links and VLESS subscription entries; native Xray JSON configs provide
+> VMess, Trojan, Shadowsocks, and other protocols registered by the pinned embedded Xray-core.
+> No external Xray process is spawned. Three per-tunnel check methods (http / ip / download)
+> measure successful-check latency as TTFB. Supports hot-reload YAML config, Pushgateway push,
+> Kubernetes leader election, and a RUN_ONCE mode for CI/scripts.
+
+## Key facts for agents
+
+- Build and run the `./cmd/exporter` package; the repository root is not a Go main package.
+- Configuration priority is per-tunnel YAML → YAML `defaults` → supported env defaults → built-ins.
+- Subscription payloads may be plain text or standard/URL-safe Base64, but only `vless://` entries are used.
+- `xray_config_file` preserves the native config except that exporter-controlled `log` and `inbounds` replace those sections.
+- VLESS share links support RAW/TCP, XHTTP, gRPC, WebSocket, HTTPUpgrade, and mKCP; see the configuration reference for aliases and parameters.
+- Release versions come from release-please; do not copy a fixed “current version” into durable docs.
 
 ## Documentation
-- [README](https://github.com/batonogov/xray-health-exporter/blob/main/README.md): install, quick start, config, metrics, Kubernetes HA
-- [Configuration reference](https://github.com/batonogov/xray-health-exporter/blob/main/config.example.yaml): full YAML example
+
+- [README (English)](https://github.com/batonogov/xray-health-exporter/blob/main/README.md): install, quick start, config, metrics, Kubernetes HA
+- [README (Russian)](https://github.com/batonogov/xray-health-exporter/blob/main/README.ru.md): Russian user guide
+- [Configuration example](https://github.com/batonogov/xray-health-exporter/blob/main/config.example.yaml): complete YAML example
 - [Changelog](https://github.com/batonogov/xray-health-exporter/blob/main/CHANGELOG.md): release history
 - [License](https://github.com/batonogov/xray-health-exporter/blob/main/LICENSE): MIT
 
 ## Architecture & internals
+
 - [AGENTS.md](https://github.com/batonogov/xray-health-exporter/blob/main/AGENTS.md): agent guide — build/test commands, conventions, architecture overview, gotchas
 - [docs/architecture.md](https://github.com/batonogov/xray-health-exporter/blob/main/docs/architecture.md): package map, key entities, run modes, hot-reload lifecycle
 - [docs/configuration.md](https://github.com/batonogov/xray-health-exporter/blob/main/docs/configuration.md): environment variables and YAML schema with defaults
@@ -19,4 +33,5 @@
 - [docs/check-methods.md](https://github.com/batonogov/xray-health-exporter/blob/main/docs/check-methods.md): http / ip / download health-check methods and TTFB instrumentation
 
 ## Optional
+
 - [docs/README.md](https://github.com/batonogov/xray-health-exporter/blob/main/docs/README.md): documentation index

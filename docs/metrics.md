@@ -35,7 +35,7 @@ Produced by `metrics.ClassifyError`:
 | `dns` | `lookup `, `no such host`, `dns:`, `name resolution`, `Name or service not known` |
 | `connection_refused` | `connection refused` |
 | `connection_reset` | `connection reset by peer`, `broken pipe` |
-| `bad_status` | non-2xx/3xx HTTP status |
+| `bad_status` | HTTP status rejected by the selected check method |
 | `socks_error` | `SOCKS5` / `SOCKS` |
 | `unknown` | anything else |
 
@@ -54,6 +54,8 @@ Produced by `metrics.ClassifyError`:
 
 - `/metrics` — Prometheus exposition (optionally protected by Basic Auth via `METRICS_PROTECTED`).
 - `/health` — always open (for k8s liveness/readiness probes).
+
+The default Prometheus registry also exposes standard `go_*` and `process_*` collectors. Pushgateway mode sends the full default registry, not only `xray_*` metrics.
 
 ## Example
 

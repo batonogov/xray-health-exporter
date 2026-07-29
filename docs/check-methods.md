@@ -1,31 +1,33 @@
 # Check methods
 
-Three health-check methods, selectable per tunnel via `check_method` (or globally via `defaults.check_method` / the `CHECK_METHOD` env var). All three measure latency as **TTFB** (time to first byte) using `net/http/httptrace`.
+Three health-check methods, selectable per tunnel via `check_method` (or globally via `defaults.check_method` / the `CHECK_METHOD` env var). All three measure successful-check latency as **TTFB** (time to first byte) using `net/http/httptrace`.
 
 ## `http` (default)
 
-Performs a `GET` against `check_url` through the tunnel's SOCKS5 proxy and expects a **2xx or 3xx** status code. This is the original behaviour.
+Performs a `GET` against `check_url` through the tunnel's SOCKS5 proxy. The current implementation accepts status **200, 301, 302, or 307**.
 
-- Pass: HTTP status is 2xx/3xx.
-- Fail: non-2xx/3xx status, or a transport error (classified into `xray_tunnel_error_total{reason=...}`).
+- Pass: HTTP status is 200, 301, 302, or 307.
+- Fail: any other status, or a transport error (classified into `xray_tunnel_error_total{reason=...}`).
 
 ## `ip`
 
-Fetches an IP-echo service (`ip_check_url`, default `https://api.ipify.org?format=text`) **through the proxy** and compares the returned IP with the host's real public IP, resolved once at startup (`DefaultChecker.ResolveRealIP`, lazily via `sync.Once` if not provided).
+Fetches an IP-echo service (`ip_check_url`, default `https://api.ipify.org?format=text`) **through the proxy** and compares the returned IP with the host's real public IP.
 
-- Pass: the proxy-reported IP **differs** from the real public IP → traffic is actually routing through the proxy.
-- Fail: the IPs match (proxy not in use) or the request errors.
+- Pass: status is 200 and the proxy-reported IP **differs** from the real public IP → traffic is actually routing through the proxy.
+- Fail: a non-200 status, matching IPs (proxy not in use), or a request error.
+
+The real IP is normally resolved once at startup. If that lookup fails, each `ip` check retries it before sending the proxied request.
 
 ## `download`
 
 Downloads a file (`download_url`) through the proxy and verifies that at least `download_min_size` bytes are received within `download_timeout`.
 
-- Pass: byte count ≥ `download_min_size` before `download_timeout`.
-- Fail: fewer bytes, or a transport error.
+- Pass: status is 200 and byte count ≥ `download_min_size` before `download_timeout`.
+- Fail: a non-200 status, fewer bytes, or a transport error.
 
 ## TTFB instrumentation
 
-Latency is captured by `ttfbRequest` + `resolveLatency` via `httptrace.ClientTrace.GotFirstResponseByte`. If the trace callback does not fire (e.g. the request failed before any byte), latency falls back to `time.Since(start)`.
+Latency is captured by `ttfbRequest` + `resolveLatency` via `httptrace.ClientTrace.GotFirstResponseByte`. For a successful check, if the trace callback does not fire, latency falls back to total elapsed time.
 
 Latency is exposed both as a gauge (`xray_tunnel_latency_seconds`) and a histogram (`xray_tunnel_latency_histogram_seconds`).
 

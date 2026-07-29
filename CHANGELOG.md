@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/batonogov/xray-health-exporter/compare/v1.6.4...v1.7.0) (2026-07-29)
+
+
+### Features
+
+* support modern VLESS share links ([#144](https://github.com/batonogov/xray-health-exporter/issues/144)) ([e986e6a](https://github.com/batonogov/xray-health-exporter/commit/e986e6aa7c40a2e4e948d63f559950cecc023b11))
+
+
+### Bug Fixes
+
+* **deps:** update gRPC to 1.82.1 ([#146](https://github.com/batonogov/xray-health-exporter/issues/146)) ([297aec8](https://github.com/batonogov/xray-health-exporter/commit/297aec86a66d9a338b44cb234d312189a4d10474))
+
 ## [1.6.4](https://github.com/batonogov/xray-health-exporter/compare/v1.6.3...v1.6.4) (2026-07-28)
 
 

@@ -10,7 +10,8 @@ Prometheus exporter for monitoring Xray-core tunnels.
 
 **Features:**
 - Multiple tunnel support in a single instance
-- VLESS URL or native Xray JSON config (`xray_config_file`) — all protocols and transports
+- Current VLESS URLs: RAW/TCP, XHTTP, gRPC, WebSocket, HTTPUpgrade, and mKCP
+- Native Xray JSON config (`xray_config_file`) — any protocol and transport supported by Xray-core
 - Subscriptions (subscription URL) — automatic fetching and updating of server lists
 - YAML configuration with hot reload
 - Automatic SOCKS port allocation
@@ -136,6 +137,9 @@ tunnels:
   # Option 1: VLESS URL
   - url: "vless://uuid@host:443?type=tcp&security=reality&pbk=...&sni=google.com"
 
+  # Current VLESS + XHTTP + Reality
+  - url: "vless://uuid@host:443?type=xhttp&security=reality&pbk=...&sni=example.com&fp=chrome&path=%2Fapi&mode=stream-up&extra=%7B%7D"
+
   # Option 2: native Xray JSON config (any protocol/transport)
   - name: "VMess Server"
     xray_config_file: "/etc/xray/vmess.json"
@@ -171,8 +175,11 @@ tunnels:
 - `url` (required) - subscription URL (returns a base64-encoded or plain text server list)
 - `update_interval` (optional) - update interval (default: `1h`)
 
+VLESS URLs follow the current Xray share-link format. Supported transports are `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, and `kcp`/`mkcp`. Legacy `type=http` is converted to XHTTP `stream-one`. Current parameters are preserved, including `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `alpn`/`ech`/`pcs`/`vcn`, and Reality `pbk`/`sid`/`pqv`/`spx`.
+
 **Notes:**
 - At least one tunnel or subscription must be specified
+- Subscription responses accept VLESS URLs in plain-text or Base64 lists
 - SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
 - Duration format: "30s", "1m", "1h30m"
 - If a parameter is not specified for a tunnel, the value from `defaults` is used

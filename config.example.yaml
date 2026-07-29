@@ -7,7 +7,12 @@ defaults:
   check_interval: "30s"
   check_timeout: "30s"
 
-# Список VLESS туннелей для мониторинга
+# Подписки могут возвращать обычный текст или Base64 со ссылками vless://
+subscriptions:
+  - url: "https://provider.example.com/subscribe?token=replace-me"
+    update_interval: "1h"
+
+# Список статических туннелей для мониторинга
 tunnels:
   # Первый туннель - используются все значения по умолчанию
   - name: "Server 1"
@@ -33,8 +38,17 @@ tunnels:
     url: "vless://your-uuid@example5.com:443?type=tcp&security=reality&pbk=your-public-key&sni=google.com&fp=chrome"
     socks_port: 2080
 
+  # Современный XHTTP + Reality; extra передаётся в xhttpSettings без потерь
+  - name: "XHTTP Server"
+    url: "vless://your-uuid@example6.com:443?type=xhttp&security=reality&pbk=your-public-key&sni=example.com&fp=chrome&path=%2Fapi&mode=stream-up&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D"
+
+  # Нативный Xray JSON: поддерживает любой протокол/транспорт Xray-core.
+  # Пользовательские inbounds заменяются локальным SOCKS5 inbound.
+  - name: "Native Xray outbound"
+    xray_config_file: "/etc/xray/outbound.json"
+
 # Примечания:
-# - Требуется как минимум один туннель
-# - Каждый туннель должен иметь валидный VLESS URL
+# - Требуется как минимум один статический туннель или подписка
+# - URL-туннель должен содержать валидную VLESS share-ссылку
 # - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082, ...), или можно задать явно через socks_port
 # - Формат duration: "30s", "1m", "1h30m" и т.д.

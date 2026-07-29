@@ -10,7 +10,8 @@ Prometheus exporter для мониторинга туннелей Xray-core.
 
 **Особенности:**
 - Поддержка множественных туннелей в одном экземпляре
-- VLESS URL или нативный Xray JSON-конфиг (`xray_config_file`) — все протоколы и транспорты
+- Актуальные VLESS URL: RAW/TCP, XHTTP, gRPC, WebSocket, HTTPUpgrade и mKCP
+- Нативный Xray JSON-конфиг (`xray_config_file`) — любые протоколы и транспорты Xray-core
 - Подписки (subscription URL) — автоматическое получение и обновление списка серверов
 - Конфигурация через YAML файл с горячей перезагрузкой
 - Автоматическое распределение SOCKS портов
@@ -136,6 +137,9 @@ tunnels:
   # Вариант 1: VLESS URL
   - url: "vless://uuid@host:443?type=tcp&security=reality&pbk=...&sni=google.com"
 
+  # Современный VLESS + XHTTP + Reality
+  - url: "vless://uuid@host:443?type=xhttp&security=reality&pbk=...&sni=example.com&fp=chrome&path=%2Fapi&mode=stream-up&extra=%7B%7D"
+
   # Вариант 2: нативный Xray JSON-конфиг (любой протокол/транспорт)
   - name: "VMess Server"
     xray_config_file: "/etc/xray/vmess.json"
@@ -171,8 +175,11 @@ tunnels:
 - `url` (обязательно) - URL подписки (возвращает base64-encoded или plain text список серверов)
 - `update_interval` (опционально) - интервал обновления (по умолчанию `1h`)
 
+VLESS URL разбираются по актуальному share-link формату Xray. Поддерживаются транспорты `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade` и `kcp`/`mkcp`. Старый `type=http` преобразуется в XHTTP `stream-one`. Сохраняются современные параметры `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `alpn`/`ech`/`pcs`/`vcn` и Reality `pbk`/`sid`/`pqv`/`spx`.
+
 **Примечания:**
 - Должен быть указан хотя бы один туннель или подписка
+- Из ответов подписок принимаются VLESS URL; список может быть обычным текстом или Base64
 - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082...), или можно задать явно через `socks_port` для каждого туннеля
 - Формат duration: "30s", "1m", "1h30m"
 - Если параметр не указан в туннеле, используется значение из `defaults`

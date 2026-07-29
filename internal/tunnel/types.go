@@ -4,6 +4,7 @@ package tunnel
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/xtls/xray-core/core"
@@ -38,21 +39,33 @@ type MetricsUpdater interface {
 
 // VLESSConfig holds the parsed fields of a VLESS URL.
 type VLESSConfig struct {
-	UUID        string
-	Address     string
-	Port        int
-	Security    string
-	PBK         string
-	SNI         string
-	FP          string
-	SID         string
-	SPX         string
-	Type        string
-	ServiceName string
-	Authority   string
-	MultiMode   bool
-	Host        string
-	Path        string
+	UUID                 string
+	Address              string
+	Port                 int
+	Encryption           string
+	Flow                 string
+	Security             string
+	PBK                  string
+	SNI                  string
+	FP                   string
+	SID                  string
+	PQV                  string
+	SPX                  string
+	ALPN                 []string
+	ECHConfigList        string
+	PinnedPeerCertSHA256 string
+	VerifyPeerCertByName string
+	Type                 string
+	ServiceName          string
+	Authority            string
+	Mode                 string
+	MultiMode            bool
+	Host                 string
+	Path                 string
+	KCPMTU               *uint32
+	KCPTTI               *uint32
+	Extra                json.RawMessage
+	FinalMask            json.RawMessage
 }
 
 // MetricLabels holds protocol-agnostic labels for Prometheus metrics.

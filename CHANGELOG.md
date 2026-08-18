@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1](https://github.com/batonogov/xray-health-exporter/compare/v1.7.0...v1.7.1) (2026-08-18)
+
+
+### Dependencies
+
+* **deps:** bump docker/login-action in the github-actions group ([#148](https://github.com/batonogov/xray-health-exporter/issues/148)) ([909103b](https://github.com/batonogov/xray-health-exporter/commit/909103bc8252de4d698ccee54dc3849a3fc72c2b))
+* **deps:** bump golang in the docker-dependencies group ([#150](https://github.com/batonogov/xray-health-exporter/issues/150)) ([5e59c6d](https://github.com/batonogov/xray-health-exporter/commit/5e59c6d06343df0f4da8cae7c63ce0a09455729b))
+
 ## [1.7.0](https://github.com/batonogov/xray-health-exporter/compare/v1.6.4...v1.7.0) (2026-07-29)
 
 

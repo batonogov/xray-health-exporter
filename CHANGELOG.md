@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.3](https://github.com/batonogov/xray-health-exporter/compare/v1.7.2...v1.7.3) (2026-09-01)
+
+
+### Dependencies
+
+* **deps:** bump softprops/action-gh-release ([#156](https://github.com/batonogov/xray-health-exporter/issues/156)) ([fe40e11](https://github.com/batonogov/xray-health-exporter/commit/fe40e1112f121e06001fc8bd0fad123d993de058))
+* **deps:** bump the go-dependencies group with 2 updates ([#155](https://github.com/batonogov/xray-health-exporter/issues/155)) ([a56ba47](https://github.com/batonogov/xray-health-exporter/commit/a56ba474eb3986e24bbb740ec5d62069d1e72932))
+
 ## [1.7.2](https://github.com/batonogov/xray-health-exporter/compare/v1.7.1...v1.7.2) (2026-08-25)
 
 

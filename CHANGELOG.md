@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.5](https://github.com/batonogov/xray-health-exporter/compare/v1.7.4...v1.7.5) (2026-09-23)
+
+
+### Dependencies
+
+* **deps:** bump alpine in the docker-dependencies group ([#162](https://github.com/batonogov/xray-health-exporter/issues/162)) ([5f3e68d](https://github.com/batonogov/xray-health-exporter/commit/5f3e68ddb6ce356dfdd6a75d22e6edd07b49fc2e))
+* **deps:** bump the github-actions group with 3 updates ([#163](https://github.com/batonogov/xray-health-exporter/issues/163)) ([a5734be](https://github.com/batonogov/xray-health-exporter/commit/a5734beb5a3ca2c4afa0368e1d3c673128d0fa4a))
+
 ## [1.7.4](https://github.com/batonogov/xray-health-exporter/compare/v1.7.3...v1.7.4) (2026-09-20)
 
 

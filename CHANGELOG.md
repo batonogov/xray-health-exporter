@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.6](https://github.com/batonogov/xray-health-exporter/compare/v1.7.5...v1.7.6) (2026-10-06)
+
+
+### Dependencies
+
+* **deps:** bump github.com/prometheus/common ([#166](https://github.com/batonogov/xray-health-exporter/issues/166)) ([dbe6542](https://github.com/batonogov/xray-health-exporter/commit/dbe65426e9eaa7b150f545547b07dfb442435404))
+
 ## [1.7.5](https://github.com/batonogov/xray-health-exporter/compare/v1.7.4...v1.7.5) (2026-09-30)
 
 

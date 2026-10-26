@@ -424,6 +424,8 @@ A ready-to-use Grafana dashboard is available in the [`grafana/dashboard.json`](
 - **HTTP Status Codes** — HTTP response code distribution over time
 - **Last Success** — time since last successful health check per tunnel
 
+Subscription panels show refresh status, accepted server count, data age and error rate, filtered to active leaders. Use the separate exporter/source filters. Ready-to-use [subscription alert rules](examples/prometheus/subscriptions.rules.yml) and validation instructions are in [the metrics reference](docs/metrics.md#subscription-dashboard-and-alerts); adjust the example 2-hour freshness threshold for your source intervals.
+
 **Import:**
 
 1. Open Grafana → Dashboards → Import

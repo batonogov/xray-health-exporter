@@ -13,7 +13,7 @@ Prometheus exporter for monitoring Xray-core tunnels.
 - Multiple tunnel support in a single instance
 - Current VLESS URLs: RAW/TCP, XHTTP, gRPC, WebSocket, HTTPUpgrade, and mKCP
 - Native Xray JSON config (`xray_config_file`) for protocols and transports registered by the pinned Xray-core
-- VLESS subscriptions — automatic fetching and updating of server lists
+- Subscriptions: VLESS, VMess, Trojan, Shadowsocks links, native Xray JSON, and supported Clash proxy lists
 - HTTP, public-IP, and download health checks with TTFB latency
 - YAML configuration with hot reload
 - Automatic SOCKS port allocation
@@ -95,7 +95,7 @@ docker run --rm \
 # Downloaded binary
 CONFIG_FILE=./config.yaml ./xray-health-exporter-linux-amd64
 
-# From source (requires Go 1.26+)
+# From source (requires Go 1.27+)
 CONFIG_FILE=./config.yaml go run ./cmd/exporter
 ```
 
@@ -173,7 +173,7 @@ tunnels:
 
 **Tunnel parameters:**
 - `name` (optional) - tunnel name for logs. If not specified, `host:port` is used
-- `url` - VLESS connection URL (mutually exclusive with `xray_config_file`)
+- `url` - VLESS, VMess, Trojan, or Shadowsocks URL (mutually exclusive with `xray_config_file`)
 - `xray_config_file` - path to a native Xray JSON config (mutually exclusive with `url`). The exporter replaces its `log` and `inbounds` sections with exporter-controlled settings; other top-level sections, including `outbounds`, are preserved
 - `check_url` (optional) - URL for availability checks
 - `check_interval` (optional) - interval between checks
@@ -188,15 +188,22 @@ tunnels:
 - `socks_port` (optional) - custom SOCKS5 port for this tunnel. Must be in range 1-65535. Duplicate ports across tunnels are not allowed. If not specified, ports are auto-assigned starting from 1080
 
 **Subscription parameters:**
-- `url` (required) - subscription URL (returns a plain-text or standard/URL-safe Base64 server list)
-- `update_interval` (optional) - update interval (default: `1h`)
+- `url` (required) - HTTP(S) URL returning text/Base64 links, native Xray JSON, or a supported Clash proxy list
+- `name` (optional) - stable source name used in subscription metrics
+- `update_interval` (optional) - positive refresh interval per source (default: `1h`)
+- `timeout` (optional) - positive request timeout (default: `30s`)
+- `format` (optional) - `auto` (default), `text`, `xray`, or `clash`
+- `headers` / `user_agent` (optional) - custom request headers and User-Agent
 
 VLESS URLs follow the current Xray share-link format. Supported transports are `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, and `kcp`/`mkcp`. Legacy `type=http`, `h2`, and `h3` are converted to XHTTP `stream-one`. Supported parameters include `encryption`, `flow`, XHTTP `host`/`path`/`mode`/`extra`, gRPC `serviceName`/`authority`/`mode`/`multiMode`, WebSocket and HTTPUpgrade `host`/`path`, mKCP `mtu`/`tti`, `fm` (FinalMask), TLS `sni`/`fp`/`alpn`/`ech`/`pcs`/`vcn`, and REALITY `pbk`/`sid`/`pqv`/`spx`. See [`docs/configuration.md`](docs/configuration.md) for validation rules and defaults.
 
 **Notes:**
 - At least one tunnel or subscription must be specified
-- Subscription responses accept only lowercase `vless://` entries in plain-text or Base64 lists
-- The subscription refresh cadence is set at startup from the shortest `update_interval`; adding the first subscription through YAML hot reload fetches it once, but periodic refresh and interval changes require a process restart
+- Subscription lists support `vless://`, `vmess://`, `trojan://`, and `ss://`; unsupported formats/options fail explicitly
+- VMess supports `auto`, `aes-128-gcm`, and `chacha20-poly1305`; `none`, `zero`, and KCP seeds are rejected. Subscription redirects never send `Referer`
+- Sources refresh independently; new subscriptions and interval changes apply without a restart. Failed refreshes retain the last working list in memory; unchanged tunnels keep running
+- Empty or invalid responses never remove servers. Remove a subscription from YAML to remove its servers. RUN_ONCE fails on any subscription error
+- `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md) Applying a saved response preserves newer fetch failures and the original fetch timestamp.
 - SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
 - Duration format: "30s", "1m", "1h30m"
 - Configuration priority is per-tunnel YAML, then YAML `defaults`, supported environment defaults, and finally built-in defaults

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -302,7 +303,7 @@ func TestWatchSubscriptions_NoSubscriptions(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		t.Fatal("WatchSubscriptions should return immediately when no subscriptions")
+		t.Fatal("WatchSubscriptions should exit when canceled without subscriptions")
 	}
 }
 
@@ -321,7 +322,7 @@ func TestWatchSubscriptions_NilConfig(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		t.Fatal("WatchSubscriptions should return immediately when config is nil")
+		t.Fatal("WatchSubscriptions should exit when canceled with nil config")
 	}
 }
 
@@ -442,5 +443,134 @@ subscriptions:
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("WatchSubscriptions did not exit")
+	}
+}
+
+func TestSubscriptionScheduleUsesPerSourceIntervals(t *testing.T) {
+	tm := NewTunnelManager(watchMockChecker{}, NewPrometheusMetrics())
+	now := time.Now()
+	slow := config.Subscription{URL: "https://slow.example", UpdateInterval: "24h"}
+	fast := config.Subscription{URL: "https://fast.example", UpdateInterval: "2h"}
+	tm.config = &config.Config{Subscriptions: []config.Subscription{slow, fast}}
+	tm.sources[subscriptionKey(slow)] = subscriptionState{lastAttempt: now}
+	tm.sources[subscriptionKey(fast)] = subscriptionState{lastAttempt: now}
+	if got := tm.nextSubscriptionDelay(now); got != 2*time.Hour {
+		t.Fatalf("delay = %v, want 2h", got)
+	}
+	tm.config.Subscriptions[1].UpdateInterval = "30m"
+	if got := tm.nextSubscriptionDelay(now); got != 30*time.Minute {
+		t.Fatalf("changed delay = %v, want 30m", got)
+	}
+}
+
+func TestSubscriptionWatcherStartsRefreshingFirstHotAddedSource(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, `{"remarks":"added","outbounds":[{"protocol":"freedom"}]}`)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	native := filepath.Join(dir, "xray.json")
+	os.WriteFile(native, []byte(`{"outbounds":[{"protocol":"freedom"}]}`), 0600)
+	path := filepath.Join(dir, "config.yaml")
+	initial := fmt.Sprintf("tunnels:\n  - name: static\n    xray_config_file: %q\n", native)
+	os.WriteFile(path, []byte(initial), 0600)
+	tm := NewTunnelManager(watchMockChecker{}, NewPrometheusMetrics())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := tm.reloadConfigContext(ctx, path, false); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { StopTunnels(tm.instances) }()
+	done := make(chan struct{})
+	go func() { defer close(done); WatchSubscriptions(ctx, tm, path) }()
+	defer func() { cancel(); <-done }()
+	os.WriteFile(path, []byte(initial+fmt.Sprintf("subscriptions:\n  - url: %q\n    update_interval: 20ms\n", server.URL)), 0600)
+	if err := tm.reloadConfigContext(ctx, path, false); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for requests.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("hot-added subscription did not refresh")
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestSubscriptionWatcherRetriesFailedFirstHotAddedSource(t *testing.T) {
+	var healthy atomic.Bool
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if !healthy.Load() {
+			http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"remarks":"recovered","outbounds":[{"protocol":"freedom"}]}`)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	native := filepath.Join(dir, "xray.json")
+	if err := os.WriteFile(native, []byte(`{"outbounds":[{"protocol":"freedom"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	body := fmt.Sprintf("tunnels:\n  - name: static\n    xray_config_file: %q\n", native)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tm := NewTunnelManager(watchMockChecker{}, NewPrometheusMetrics())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := tm.reloadConfigContext(ctx, path, false); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { StopTunnels(tm.instances) }()
+	original := tm.instances[0]
+	done := make(chan struct{})
+	go func() { defer close(done); WatchSubscriptions(ctx, tm, path) }()
+	defer func() { cancel(); <-done }()
+	body += fmt.Sprintf("subscriptions:\n  - url: %q\n    update_interval: 100ms\n", server.URL)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.reloadConfigContext(ctx, path, false); err == nil {
+		t.Fatal("expected initial fetch failure")
+	}
+	// A scheduler tick before this source's own deadline must not refetch it.
+	if err := tm.reloadConfigContext(ctx, path, true); err == nil {
+		t.Fatal("uncached source was silently accepted")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("source fetched before due: %d requests", got)
+	}
+	healthy.Store(true)
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		tm.mu.RLock()
+		count := len(tm.instances)
+		retained := count > 0 && tm.instances[0] == original
+		tm.mu.RUnlock()
+		if !retained {
+			t.Fatal("retry replaced original static tunnel")
+		}
+		if count == 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("first hot-added source did not recover without another file edit")
+		case <-ticker.C:
+		}
+	}
+	if requests.Load() < 2 {
+		t.Fatal("source was not retried")
 	}
 }

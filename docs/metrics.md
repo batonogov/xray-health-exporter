@@ -50,6 +50,17 @@ Produced by `metrics.ClassifyError`:
 | `xray_exporter_config_reload_errors_total` | counter | — | Configuration reload errors |
 | `xray_exporter_tunnels_configured` | gauge | — | Current number of configured tunnels |
 
+## Subscription metrics
+
+All subscription metrics use a single `name` label: the configured source name or `subscription-N` (1-based). URLs and credentials are never labels. Removed sources have their series deleted.
+
+| Metric | Type | Description |
+|---|---|---|
+| `xray_subscription_up` | gauge | 1 when an accepted response exists and the latest refresh has not failed; applying older staged data does not clear a later failure |
+| `xray_subscription_last_success_timestamp` | gauge | Original fetch timestamp of the latest accepted response, or 0 before acceptance; never the later application time |
+| `xray_subscription_servers` | gauge | Number of servers in the accepted configuration, including a staged list applied after a later fetch failed |
+| `xray_subscription_refresh_errors_total` | counter | Failed fetches or newly rejected candidate responses; reusing staged data does not count as another attempt |
+
 ## Endpoints
 
 - `/metrics` — Prometheus exposition (optionally protected by Basic Auth via `METRICS_PROTECTED`).

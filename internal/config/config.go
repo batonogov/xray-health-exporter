@@ -3,12 +3,9 @@
 package config
 
 import (
-	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -48,26 +45,32 @@ type Defaults struct {
 
 // Subscription describes a remote subscription URL that provides tunnel entries.
 type Subscription struct {
-	URL            string `yaml:"url"`
-	UpdateInterval string `yaml:"update_interval"`
+	Name           string            `yaml:"name"`
+	URL            string            `yaml:"url"`
+	UpdateInterval string            `yaml:"update_interval"`
+	Headers        map[string]string `yaml:"headers"`
+	UserAgent      string            `yaml:"user_agent"`
+	Timeout        string            `yaml:"timeout"`
+	Format         string            `yaml:"format"`
 }
 
 // Tunnel describes a single tunnel configuration.
 type Tunnel struct {
-	Name              string   `yaml:"name"`
-	URL               string   `yaml:"url"`
-	XrayConfigFile    string   `yaml:"xray_config_file"`
-	CheckURL          string   `yaml:"check_url"`
-	CheckInterval     string   `yaml:"check_interval"`
-	CheckTimeout      string   `yaml:"check_timeout"`
-	SocksPort         int      `yaml:"socks_port"`
-	MaxBackoff        string   `yaml:"max_backoff"`
-	BackoffMultiplier *float64 `yaml:"backoff_multiplier"`
-	CheckMethod       string   `yaml:"check_method"`
-	IPCheckURL        string   `yaml:"ip_check_url"`
-	DownloadURL       string   `yaml:"download_url"`
-	DownloadTimeout   string   `yaml:"download_timeout"`
-	DownloadMinSize   int64    `yaml:"download_min_size"`
+	Name              string          `yaml:"name"`
+	URL               string          `yaml:"url"`
+	XrayConfigFile    string          `yaml:"xray_config_file"`
+	XrayConfigJSON    json.RawMessage `yaml:"-"`
+	CheckURL          string          `yaml:"check_url"`
+	CheckInterval     string          `yaml:"check_interval"`
+	CheckTimeout      string          `yaml:"check_timeout"`
+	SocksPort         int             `yaml:"socks_port"`
+	MaxBackoff        string          `yaml:"max_backoff"`
+	BackoffMultiplier *float64        `yaml:"backoff_multiplier"`
+	CheckMethod       string          `yaml:"check_method"`
+	IPCheckURL        string          `yaml:"ip_check_url"`
+	DownloadURL       string          `yaml:"download_url"`
+	DownloadTimeout   string          `yaml:"download_timeout"`
+	DownloadMinSize   int64           `yaml:"download_min_size"`
 }
 
 // ApplyTunnelDefaults fills zero-value fields on tunnel with values from
@@ -184,16 +187,26 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("no tunnels or subscriptions defined in config")
 	}
 
-	// Validate subscriptions
-	for i, sub := range config.Subscriptions {
-		if sub.URL == "" {
-			return nil, fmt.Errorf("subscription %d: url is required", i)
-		}
+	// Validate subscriptions before any network requests.
+	subscriptionNames := make(map[string]bool)
+	for i := range config.Subscriptions {
+		sub := &config.Subscriptions[i]
 		if sub.UpdateInterval == "" {
-			config.Subscriptions[i].UpdateInterval = "1h"
+			sub.UpdateInterval = "1h"
 		}
-		if _, err := time.ParseDuration(config.Subscriptions[i].UpdateInterval); err != nil {
-			return nil, fmt.Errorf("subscription %d: invalid update_interval: %v", i, err)
+		name := sub.Name
+		if name == "" {
+			name = fmt.Sprintf("subscription-%d", i+1)
+		}
+		if subscriptionNames[name] {
+			return nil, fmt.Errorf("duplicate subscription name at index %d", i)
+		}
+		subscriptionNames[name] = true
+		// Persist the effective name so cache and scheduling identities distinguish
+		// unnamed sources even when their URL and request options are identical.
+		sub.Name = name
+		if err := validateSubscription(*sub); err != nil {
+			return nil, fmt.Errorf("subscription %d: %w", i, err)
 		}
 	}
 
@@ -217,117 +230,14 @@ func LoadConfig(configPath string) (*Config, error) {
 	return &config, nil
 }
 
-// FetchSubscription downloads a subscription URL and returns the list of
-// tunnels found in the response. Supports base64-encoded and plain-text
-// payloads. Each line is treated as a tunnel URL; the tunnel name is
-// extracted from the URL fragment or host.
-func FetchSubscription(subURL string) ([]Tunnel, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(subURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch subscription: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("subscription returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max
-	if err != nil {
-		return nil, fmt.Errorf("failed to read subscription response: %v", err)
-	}
-
-	content := strings.TrimSpace(string(body))
-	if content == "" {
-		return nil, nil
-	}
-
-	// Try to decode as base64 (with and without padding)
-	decoded, err := base64.StdEncoding.DecodeString(content)
-	if err != nil {
-		decoded, err = base64.RawStdEncoding.DecodeString(content)
-		if err != nil {
-			decoded, err = base64.URLEncoding.DecodeString(content)
-			if err != nil {
-				decoded, err = base64.RawURLEncoding.DecodeString(content)
-				if err != nil {
-					// Not base64 — use as plain text
-					decoded = []byte(content)
-				}
-			}
-		}
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(decoded)), "\n")
-
-	var tunnels []Tunnel
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		tunnel := Tunnel{URL: line}
-
-		// Extract name from fragment (#name)
-		if u, err := url.Parse(line); err == nil && u.Fragment != "" {
-			tunnel.Name = u.Fragment
-		} else if u != nil {
-			// Generate name from host:port
-			tunnel.Name = u.Host
-		}
-
-		tunnels = append(tunnels, tunnel)
-	}
-
-	return tunnels, nil
-}
-
-// ResolveSubscriptions fetches all subscription URLs from config, filters to
-// supported protocols (VLESS), applies defaults, and returns the combined
-// list of tunnels.
-func ResolveSubscriptions(config *Config) []Tunnel {
-	var allTunnels []Tunnel
-
-	for i, sub := range config.Subscriptions {
-		tunnels, err := FetchSubscription(sub.URL)
-		if err != nil {
-			slog.Error("failed to fetch subscription", "index", i, "url", sub.URL, "error", err)
-			continue
-		}
-
-		// Filter to only supported protocols (VLESS URLs)
-		var supported []Tunnel
-		for _, t := range tunnels {
-			if strings.HasPrefix(t.URL, "vless://") {
-				supported = append(supported, t)
-			} else {
-				slog.Warn("skipping unsupported URL scheme", "subscription_index", i, "tunnel", t.Name)
-			}
-		}
-		tunnels = supported
-
-		// Apply defaults to each tunnel from subscription
-		for j := range tunnels {
-			ApplyTunnelDefaults(&tunnels[j], config.Defaults)
-		}
-
-		slog.Debug("subscription fetched tunnels", "subscription_index", i, "count", len(tunnels))
-		allTunnels = append(allTunnels, tunnels...)
-	}
-
-	return allTunnels
-}
-
 // Validate checks that a tunnel configuration is structurally valid.
-// It performs basic URL and file checks without invoking full VLESS parsing
+// It performs basic URL and file checks without invoking full share-link parsing
 // (semantic validation happens later in the tunnel package).
 func (t *Tunnel) Validate() error {
 	var errs []error
 
 	hasURL := t.URL != ""
-	hasXrayConfig := t.XrayConfigFile != ""
+	hasXrayConfig := t.XrayConfigFile != "" || len(t.XrayConfigJSON) != 0
 
 	if hasURL && hasXrayConfig {
 		errs = append(errs, fmt.Errorf("url and xray_config_file are mutually exclusive"))
@@ -337,7 +247,7 @@ func (t *Tunnel) Validate() error {
 	}
 
 	if hasURL {
-		// Structural URL validation only — semantic VLESS parsing happens
+		// Structural URL validation only — semantic share-link parsing happens
 		// in the tunnel package at init time.
 		if strings.HasPrefix(t.URL, "vless://") {
 			if _, err := url.Parse(t.URL); err != nil {
@@ -349,9 +259,18 @@ func (t *Tunnel) Validate() error {
 			}
 		}
 	}
-	if hasXrayConfig {
+	if t.XrayConfigFile != "" {
 		if _, err := os.Stat(t.XrayConfigFile); err != nil {
 			errs = append(errs, fmt.Errorf("xray_config_file not accessible: %v", err))
+		}
+	}
+
+	if len(t.XrayConfigJSON) != 0 {
+		if t.XrayConfigFile != "" {
+			errs = append(errs, errors.New("xray_config_file and inline Xray config are mutually exclusive"))
+		}
+		if _, err := parseXraySubscription(t.XrayConfigJSON); err != nil {
+			errs = append(errs, err)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,7 +37,10 @@ func RunOnce(configFile string, checker HealthChecker, mu MetricsUpdater, w io.W
 		return false, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	subTunnels := config.ResolveSubscriptions(cfg)
+	subTunnels, err := config.ResolveSubscriptionsContext(context.Background(), cfg)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve subscriptions: %w", err)
+	}
 	cfg.Tunnels = append(cfg.Tunnels, subTunnels...)
 
 	if len(cfg.Tunnels) == 0 {

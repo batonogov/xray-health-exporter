@@ -323,7 +323,7 @@ func TestRunTunnelChecker_BackoffOnFailures(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		tunnel.RunTunnelChecker(ctx, ti, DefaultChecker{}, tunnel.NewPrometheusMetrics())
+		tunnel.RunTunnelChecker(ctx, ti, &DefaultChecker{}, tunnel.NewPrometheusMetrics())
 	}()
 
 	time.Sleep(3500 * time.Millisecond)
@@ -407,7 +407,7 @@ func TestRunTunnelChecker_BackoffResetsOnSuccess(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		tunnel.RunTunnelChecker(ctx, ti, DefaultChecker{}, tunnel.NewPrometheusMetrics())
+		tunnel.RunTunnelChecker(ctx, ti, &DefaultChecker{}, tunnel.NewPrometheusMetrics())
 	}()
 
 	time.Sleep(1200 * time.Millisecond)
@@ -491,7 +491,7 @@ func TestRunTunnelChecker(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	go tunnel.RunTunnelChecker(ctx, ti, DefaultChecker{}, tunnel.NewPrometheusMetrics())
+	go tunnel.RunTunnelChecker(ctx, ti, &DefaultChecker{}, tunnel.NewPrometheusMetrics())
 
 	time.Sleep(1600 * time.Millisecond)
 	cancel()
@@ -570,7 +570,7 @@ func TestRunTunnelChecker_Context(t *testing.T) {
 	done := make(chan bool, 1)
 
 	go func() {
-		tunnel.RunTunnelChecker(ctx, ti, DefaultChecker{}, tunnel.NewPrometheusMetrics())
+		tunnel.RunTunnelChecker(ctx, ti, &DefaultChecker{}, tunnel.NewPrometheusMetrics())
 		done <- true
 	}()
 
@@ -603,7 +603,7 @@ func TestRunTunnelChecker_ImmediateCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		tunnel.RunTunnelChecker(ctx, ti, DefaultChecker{}, tunnel.NewPrometheusMetrics())
+		tunnel.RunTunnelChecker(ctx, ti, &DefaultChecker{}, tunnel.NewPrometheusMetrics())
 		close(done)
 	}()
 
@@ -866,6 +866,8 @@ func startMockSOCKS(t *testing.T, afterConnect func(net.Conn)) (net.Listener, in
 // --- Tests for check_method: ip (issue #114) ---
 
 func TestCheckByIP_Success(t *testing.T) {
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "192.168.1.1") }))
+	defer direct.Close()
 	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
 		buf := make([]byte, 4096)
@@ -885,14 +887,14 @@ func TestCheckByIP_Success(t *testing.T) {
 		},
 		SocksPort:     socksPort,
 		CheckMethod:   "ip",
-		IPCheckURL:    "http://ip.example.com",
+		IPCheckURL:    direct.URL,
 		CheckTimeout:  5 * time.Second,
 		CheckInterval: 30 * time.Second,
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	checker := NewDefaultChecker("192.168.1.1")
+	checker := NewDefaultChecker("")
 	result := checker.Check(ti)
 	if !result.Up {
 		t.Errorf("expected tunnel up (different IP), got error: %v", result.Err)
@@ -903,6 +905,8 @@ func TestCheckByIP_Success(t *testing.T) {
 }
 
 func TestCheckByIP_SameIP(t *testing.T) {
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "192.168.1.1") }))
+	defer direct.Close()
 	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
 		buf := make([]byte, 4096)
@@ -922,14 +926,14 @@ func TestCheckByIP_SameIP(t *testing.T) {
 		},
 		SocksPort:     socksPort,
 		CheckMethod:   "ip",
-		IPCheckURL:    "http://ip.example.com",
+		IPCheckURL:    direct.URL,
 		CheckTimeout:  5 * time.Second,
 		CheckInterval: 30 * time.Second,
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	checker := NewDefaultChecker("192.168.1.1")
+	checker := NewDefaultChecker("")
 	result := checker.Check(ti)
 	if result.Up {
 		t.Error("expected tunnel down (proxy IP matches real IP)")
@@ -937,6 +941,8 @@ func TestCheckByIP_SameIP(t *testing.T) {
 }
 
 func TestCheckByIP_BadStatus(t *testing.T) {
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "192.168.1.1") }))
+	defer direct.Close()
 	socksListener, socksPort := startMockSOCKS(t, func(c net.Conn) {
 		c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
 		buf := make([]byte, 4096)
@@ -955,14 +961,14 @@ func TestCheckByIP_BadStatus(t *testing.T) {
 		},
 		SocksPort:     socksPort,
 		CheckMethod:   "ip",
-		IPCheckURL:    "http://ip.example.com",
+		IPCheckURL:    direct.URL,
 		CheckTimeout:  5 * time.Second,
 		CheckInterval: 30 * time.Second,
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	checker := NewDefaultChecker("192.168.1.1")
+	checker := NewDefaultChecker("")
 	result := checker.Check(ti)
 	if result.Up {
 		t.Error("expected tunnel down due to bad status")

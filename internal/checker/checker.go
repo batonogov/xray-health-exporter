@@ -5,9 +5,9 @@
 //   - "http" (default): GET the check_url and expect status 200, 301, 302,
 //     or 307.
 //   - "ip": GET an IP-echo service through the proxy and compare the returned
-//     IP with the host's real public IP. Startup normally resolves the real IP
-//     once; if that fails, each ip check retries it. The check passes if the
-//     proxy IP differs from the real IP.
+//     IP with the host's public IP obtained directly from the same endpoint.
+//     Direct results are cached per endpoint for five minutes. The check
+//     passes only when both responses are valid, different IP addresses.
 //   - "download": download from a URL through the proxy and verify that at
 //     least download_min_size bytes are received.
 package checker
@@ -20,7 +20,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"strings"
+	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,23 +30,30 @@ import (
 	"github.com/batonogov/xray-health-exporter/internal/tunnel"
 )
 
-// DefaultChecker is the production HealthChecker that performs real SOCKS5
-// HTTP health-checks. The real public IP is normally resolved once at startup
-// via ResolveRealIP and stored for ip-method checks.
+// DefaultChecker performs SOCKS5 HTTP health checks and caches direct IP
+// lookups per endpoint. Its zero value is ready to use; do not copy it after use.
 type DefaultChecker struct {
-	realIP string
+	mu        sync.Mutex
+	ips       map[string]*cachedIP
+	now       func() time.Time
+	resolveIP func(context.Context, string) (netip.Addr, error)
 }
 
-// NewDefaultChecker creates a DefaultChecker with the pre-resolved real public
-// IP. Pass an empty string to retry resolution on each ip-method check.
-func NewDefaultChecker(realIP string) DefaultChecker {
-	return DefaultChecker{realIP: realIP}
+// NewDefaultChecker creates a checker. A legacy pre-resolved address, when
+// provided, seeds only the built-in IP endpoint for one cache TTL. Pass an empty
+// string for lazy resolution using each tunnel's effective ip_check_url.
+func NewDefaultChecker(realIP string) *DefaultChecker {
+	dc := &DefaultChecker{}
+	if ip, err := parseIP(realIP); err == nil {
+		dc.ips = map[string]*cachedIP{metrics.DefaultIPCheckURL: {ip: ip, expires: time.Now().Add(realIPCacheTTL)}}
+	}
+	return dc
 }
 
 // Check dispatches the health-check to the method configured on the tunnel
 // instance (http, ip, or download). The default is http for backward
 // compatibility.
-func (dc DefaultChecker) Check(ti *tunnel.TunnelInstance) tunnel.CheckResult {
+func (dc *DefaultChecker) Check(ti *tunnel.TunnelInstance) tunnel.CheckResult {
 	method := ti.CheckMethod
 	if method == "" {
 		method = metrics.DefaultCheckMethod
@@ -161,66 +169,58 @@ func PerformCheck(ti *tunnel.TunnelInstance) tunnel.CheckResult {
 	}
 }
 
-// checkByIP verifies that traffic is actually routed through the proxy by
-// comparing the IP returned via the proxy against the host's real public IP.
-// The check succeeds if the proxy IP differs from the real IP. If the real IP
-// was not resolved at startup, resolution is retried for each call.
-func (dc DefaultChecker) checkByIP(ti *tunnel.TunnelInstance) tunnel.CheckResult {
-	realIP := dc.realIP
-	if realIP == "" {
-		var err error
-		realIP, err = ResolveRealIP(context.Background(), ti.IPCheckURL)
-		if err != nil {
-			return tunnel.CheckResult{Up: false, Err: fmt.Errorf("failed to resolve real IP: %w", err)}
-		}
+// checkByIP validates and compares canonical direct/proxied IP addresses. The
+// complete check, including a direct cache miss, shares one timeout budget.
+func (dc *DefaultChecker) checkByIP(ti *tunnel.TunnelInstance) tunnel.CheckResult {
+	timeout := ti.CheckTimeout
+	if timeout <= 0 {
+		timeout = metrics.DefaultTimeout
 	}
-
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	endpoint := ti.IPCheckURL
+	if endpoint == "" {
+		endpoint = metrics.DefaultIPCheckURL
+	}
+	realIP, err := dc.hostIP(ctx, endpoint)
+	if err != nil {
+		return tunnel.CheckResult{Err: fmt.Errorf("failed to resolve real IP: %w", err)}
+	}
+	if err := ctx.Err(); err != nil {
+		return tunnel.CheckResult{Err: err}
+	}
 	start := time.Now()
-
-	client, err := newSOCKSClient(ti, ti.CheckTimeout)
+	deadline, _ := ctx.Deadline()
+	client, err := newSOCKSClient(ti, time.Until(deadline))
 	if err != nil {
-		return tunnel.CheckResult{Up: false, Err: err}
+		return tunnel.CheckResult{Err: err}
 	}
-
-	req, ttfbNanos, err := ttfbRequest(context.Background(), start, ti.IPCheckURL)
+	req, ttfbNanos, err := ttfbRequest(ctx, start, endpoint)
 	if err != nil {
-		return tunnel.CheckResult{Up: false, Err: err}
+		return tunnel.CheckResult{Err: err}
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
-		return tunnel.CheckResult{Up: false, Err: err}
+		return tunnel.CheckResult{Err: err}
 	}
 	defer resp.Body.Close()
-
+	result := tunnel.CheckResult{HTTPStatus: resp.StatusCode}
 	if resp.StatusCode != http.StatusOK {
-		return tunnel.CheckResult{
-			Up:         false,
-			HTTPStatus: resp.StatusCode,
-			Err:        fmt.Errorf("ip check returned bad status: %d", resp.StatusCode),
-		}
+		result.Err = fmt.Errorf("ip check returned bad status: %d", resp.StatusCode)
+		return result
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	proxyIP, err := readIPResponse(resp.Body)
 	if err != nil {
-		return tunnel.CheckResult{Up: false, Err: err}
+		result.Err = fmt.Errorf("invalid proxy IP response: %w", err)
+		return result
 	}
-
-	proxyIP := strings.TrimSpace(string(body))
-
 	if proxyIP == realIP {
-		return tunnel.CheckResult{
-			Up:         false,
-			HTTPStatus: resp.StatusCode,
-			Err:        fmt.Errorf("proxy IP (%s) matches real IP — traffic is not routed through the proxy", proxyIP),
-		}
+		result.Err = fmt.Errorf("proxy IP (%s) matches real IP — traffic may share the host's egress", proxyIP)
+		return result
 	}
-
-	return tunnel.CheckResult{
-		Up:         true,
-		Latency:    resolveLatency(ttfbNanos, start),
-		HTTPStatus: resp.StatusCode,
-	}
+	result.Up = true
+	result.Latency = resolveLatency(ttfbNanos, start)
+	return result
 }
 
 // checkByDownload verifies the tunnel by downloading from a URL through the
@@ -272,32 +272,4 @@ func checkByDownload(ti *tunnel.TunnelInstance) tunnel.CheckResult {
 		Latency:    resolveLatency(ttfbNanos, start),
 		HTTPStatus: resp.StatusCode,
 	}
-}
-
-// ResolveRealIP determines the host's real public IP by making a direct
-// (non-proxy) GET request to an IP-echo service. Call once at startup; the
-// result is stored in DefaultChecker for ip-method checks.
-func ResolveRealIP(ctx context.Context, ipCheckURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipCheckURL, nil)
-	if err != nil {
-		return "", err
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ip check returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(string(body)), nil
 }

@@ -88,7 +88,7 @@ func main() {
 
 		slog.Info("running in run-once mode")
 
-		allUp, err := tunnel.RunOnce(configFile, checker.DefaultChecker{}, tunnel.NewPrometheusMetrics(), os.Stdout)
+		allUp, err := tunnel.RunOnce(configFile, checker.NewDefaultChecker(""), tunnel.NewPrometheusMetrics(), os.Stdout)
 		if err != nil {
 			slog.Error("run-once failed", "error", err)
 			os.Exit(1)
@@ -155,20 +155,7 @@ func main() {
 		serverErr <- server.ListenAndServe()
 	}()
 
-	// Resolve the host's real public IP once for ip-method checks.
-	// If this fails, each ip check will retry the lookup.
-	ipCheckURL := os.Getenv("IP_CHECK_URL")
-	if ipCheckURL == "" {
-		ipCheckURL = metrics.DefaultIPCheckURL
-	}
-	ipResolveCtx, ipResolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	realIP, ipErr := checker.ResolveRealIP(ipResolveCtx, ipCheckURL)
-	ipResolveCancel()
-	if ipErr != nil {
-		slog.Warn("failed to resolve real IP at startup, each ip check will retry", "error", ipErr)
-	}
-
-	probeChecker := checker.NewDefaultChecker(realIP)
+	probeChecker := checker.NewDefaultChecker("")
 	probeMetrics := tunnel.NewPrometheusMetrics()
 
 	// Configure optional Prometheus Pushgateway push. The push loop only runs

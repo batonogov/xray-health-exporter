@@ -39,14 +39,16 @@ Applied to every tunnel unless the tunnel overrides the field.
 |---|---|---|---|
 | `check_url` | string | `https://www.google.com` | URL for `http` checks |
 | `check_interval` | duration | `30s` | Time between checks |
-| `check_timeout` | duration | `30s` | Per-check timeout |
+| `check_timeout` | duration | `30s` | Per-check timeout; `ip` shares this budget between direct lookup and proxied request |
 | `max_backoff` | duration | `5m` | Max backoff on repeated failures; must be a positive Go duration |
 | `backoff_multiplier` | float | `2.0` | Backoff growth factor; must be finite and ≥ 1.0 |
 | `check_method` | string | `http` | `http` / `ip` / `download` |
-| `ip_check_url` | string | `https://api.ipify.org?format=text` | IP-echo URL for `ip` |
+| `ip_check_url` | string | `https://api.ipify.org?format=text` | Plain-text IP-echo URL used for both direct and proxied `ip` requests |
 | `download_url` | string | `https://proof.ovh.net/files/1Mb.dat` | File URL for `download` |
 | `download_timeout` | duration | `60s` | Timeout for `download` |
 | `download_min_size` | int | `51200` | Minimum bytes for `download` |
+
+For `ip`, successful direct responses are cached per effective URL for 5 minutes and refreshed on the next check after expiry. Failed refreshes never use the expired address. Lookups are lazy, with no startup request. See [check methods](check-methods.md#ip) for address validation and timeout behavior.
 
 ### `subscriptions` (optional, list)
 
@@ -115,7 +117,7 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 | `backoff_multiplier` | float | Overrides `defaults.backoff_multiplier`; must be finite and ≥ 1.0 |
 | `socks_port` | int | Optional; auto-assigned from 1080 if unset. Validated unique, range 1–65535 |
 | `check_method` | string | `http` / `ip` / `download` |
-| `ip_check_url` | string | IP-echo URL for `ip` |
+| `ip_check_url` | string | Plain-text IP-echo URL used for both direct and proxied `ip` requests |
 | `download_url` | string | File URL for `download` |
 | `download_timeout` | duration | Timeout for `download` |
 | `download_min_size` | int | Minimum bytes for `download` |

@@ -47,7 +47,7 @@ func RunOnce(configFile string, checker HealthChecker, mu MetricsUpdater, w io.W
 		return false, fmt.Errorf("no tunnels to initialize (including subscriptions)")
 	}
 
-	if err := config.ValidateTunnels(cfg); err != nil {
+	if err := prepareTunnelConfig(cfg); err != nil {
 		return false, fmt.Errorf("config validation failed: %w", err)
 	}
 

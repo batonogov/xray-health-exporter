@@ -9,7 +9,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -104,43 +103,9 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 		return nil, fmt.Errorf("download_min_size must be positive")
 	}
 
-	var xrayConfigJSON []byte
-	var vlessConfig *VLESSConfig
-	var metricLabels MetricLabels
-
-	if len(tunnel.XrayConfigJSON) > 0 {
-		xrayConfigJSON, metricLabels, err = LoadXrayConfigJSON(tunnel.XrayConfigJSON, socksPort)
-		if err != nil {
-			return nil, err
-		}
-	} else if tunnel.URL != "" && !strings.HasPrefix(tunnel.URL, "vless://") {
-		xrayConfigJSON, metricLabels, err = CreateShareLinkConfig(tunnel.URL, socksPort)
-		if err != nil {
-			return nil, err
-		}
-	} else if tunnel.XrayConfigFile != "" {
-		// xray_config_file mode
-		xrayConfigJSON, metricLabels, err = LoadXrayConfigFile(tunnel.XrayConfigFile, socksPort)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load xray config file: %v", err)
-		}
-	} else {
-		// VLESS URL mode
-		vlessConfig, err = ParseVLESSURL(tunnel.URL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse VLESS URL: %v", err)
-		}
-
-		metricLabels = MetricLabels{
-			Server:   fmt.Sprintf("%s:%d", vlessConfig.Address, vlessConfig.Port),
-			Security: vlessConfig.Security,
-			SNI:      vlessConfig.SNI,
-		}
-
-		xrayConfigJSON, err = CreateXrayConfig(vlessConfig, socksPort)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Xray config: %v", err)
-		}
+	xrayConfigJSON, vlessConfig, metricLabels, err := buildTunnelConfig(tunnel, socksPort)
+	if err != nil {
+		return nil, err
 	}
 
 	slog.Debug("starting Xray instance", "tunnel", tunnel.Name, "socks_port", socksPort)
@@ -452,17 +417,15 @@ func subscriptionKey(sub config.Subscription) string {
 }
 
 func tunnelFingerprint(t config.Tunnel) (string, error) {
-	data, err := json.Marshal(t)
+	identity, err := describeTunnel(t)
 	if err != nil {
 		return "", err
 	}
-	if t.XrayConfigFile != "" {
-		contents, err := os.ReadFile(t.XrayConfigFile)
-		if err != nil {
-			return "", err
-		}
-		data = append(data, contents...)
-	}
+	data, _ := json.Marshal(struct {
+		Route string
+		Name  string
+		Port  int
+	}{identity.route, identity.tunnel.Name, identity.tunnel.SocksPort})
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
@@ -577,7 +540,7 @@ func (tm *TunnelManager) reloadConfigContext(ctx context.Context, configFile str
 	if len(cfg.Tunnels) == 0 {
 		return fmt.Errorf("no tunnels to initialize")
 	}
-	if err := config.ValidateTunnels(cfg); err != nil {
+	if err := prepareTunnelConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 	if err := tm.reconcile(ctx, cfg); err != nil {

@@ -61,7 +61,7 @@ All subscription metrics use a single `name` label: the configured source name o
 | `xray_subscription_servers` | gauge | Number of servers in this source’s accepted list before cross-source deduplication, including a staged list applied after a later fetch failed |
 | `xray_subscription_refresh_errors_total` | counter | Failed fetches or newly rejected candidate responses; reusing staged data does not count as another attempt |
 
-Subscription status series are populated by the daemon subscription manager, not by RUN_ONCE. They can remain after a leader stops probing; in HA deployments, gate subscription alerts on `xray_exporter_leader == 1` for the same exporter instance.
+Subscription status series are populated by the daemon subscription manager, not by RUN_ONCE. They are removed when its probing session exits, including startup failure. During shutdown the leader gauge drops before probe cleanup completes; in HA deployments, gate subscription alerts on `xray_exporter_leader == 1` for the same exporter instance.
 
 ## Endpoints
 
@@ -81,3 +81,21 @@ xray_exporter_leader 1
 ```
 
 See [`grafana/dashboard.json`](../grafana/dashboard.json) for a ready-to-use dashboard.
+
+## Subscription dashboard and alerts
+
+The Grafana dashboard includes refresh status, accepted server count, accepted-data age and refresh error rate. Use the **Exporter job**, **Exporter instance**, and **Subscription** filters for these panels; tunnel/server filters apply to the existing tunnel panels. Series are matched to `xray_exporter_leader == 1` on `(job, instance)`, so stale follower data does not appear as an active source. Scrape labels must identify each exporter uniquely; include an additional cluster label in matching expressions if `(job, instance)` is not unique across clusters.
+
+Load [`subscriptions.rules.yml`](../examples/prometheus/subscriptions.rules.yml) using Prometheus `rule_files` (or adapt it into a PrometheusRule for your operator). These are pull/scrape examples; Pushgateway users must adapt label matching to their grouping/scrape labels.
+
+```yaml
+rule_files:
+  - /etc/prometheus/subscriptions.rules.yml
+```
+
+- `XraySubscriptionRefreshFailed`: an active leader reports a source down for 5 minutes. Existing cached tunnels may still work.
+- `XraySubscriptionDataStale`: accepted data is older than 2 hours for 15 minutes. **Adjust the 7200-second policy before enabling it for sources with longer update intervals**, or use source-specific selectors and thresholds. A zero success timestamp is excluded; refresh failure covers sources with no accepted response.
+
+A missing exporter/source series is not a healthy source. Keep a separate target `up == 0` / absence alert for your deployment.
+
+Validate changes with `python3 scripts/check_monitoring.py --output-rules /tmp/dashboard.rules.json`, then `promtool check rules /tmp/dashboard.rules.json`; run `promtool test rules subscriptions.test.yml` from `examples/prometheus`. CI validates both dashboard queries and alert firing/resolution, including follower suppression and source removal.

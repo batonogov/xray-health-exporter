@@ -173,17 +173,16 @@ func main() {
 	}
 
 	probingDone := make(chan struct{})
+	var probingErr error
+	exitCode := 0
 	go func() {
 		defer close(probingDone)
+		defer metrics.SetLeader(false)
 		if lec != nil {
-			if err := leaderelection.RunWithLeaderElection(ctx, lec, configFile, probeChecker, probeMetrics); err != nil {
-				slog.Info("leader election stopped", "error", err)
-			}
+			probingErr = leaderelection.RunWithLeaderElection(ctx, lec, configFile, probeChecker, probeMetrics)
 			return
 		}
-		if err := tunnel.RunProbing(ctx, configFile, probeChecker, probeMetrics); err != nil {
-			slog.Info("probing stopped", "error", err)
-		}
+		probingErr = tunnel.RunProbing(ctx, configFile, probeChecker, probeMetrics)
 	}()
 
 	select {
@@ -193,7 +192,10 @@ func main() {
 		}
 	case <-ctx.Done():
 	case <-probingDone:
-		slog.Warn("probing exited unexpectedly, shutting down")
+		if ctx.Err() == nil {
+			exitCode = 1
+		}
+		slog.Warn("probing exited, shutting down", "error", probingErr)
 	}
 
 	slog.Info("shutdown signal received, stopping HTTP server")
@@ -206,8 +208,16 @@ func main() {
 
 	select {
 	case <-probingDone:
+		if probingErr != nil {
+			slog.Error("probing failed", "error", probingErr)
+			exitCode = 1
+		}
 	case <-time.After(15 * time.Second):
+		exitCode = 1
 		slog.Warn("probing did not stop within timeout, exiting anyway", "timeout", "15s")
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }
 

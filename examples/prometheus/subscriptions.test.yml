@@ -1,0 +1,77 @@
+rule_files:
+  - subscriptions.rules.yml
+evaluation_interval: 1m
+tests:
+  - name: only the leader fires a persistent refresh failure
+    interval: 1m
+    input_series:
+      - series: 'xray_subscription_up{name="failed",job="xray",instance="leader"}'
+        values: '0+0x10'
+      - series: 'xray_subscription_up{name="healthy",job="xray",instance="leader"}'
+        values: '1+0x10'
+      - series: 'xray_subscription_up{name="failed",job="xray",instance="follower"}'
+        values: '0+0x10'
+      - series: 'xray_exporter_leader{job="xray",instance="leader"}'
+        values: '1+0x10'
+      - series: 'xray_exporter_leader{job="xray",instance="follower"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: XraySubscriptionRefreshFailed
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: XraySubscriptionRefreshFailed
+        exp_alerts:
+          - exp_labels:
+              name: failed
+              job: xray
+              instance: leader
+              severity: warning
+            exp_annotations:
+              summary: Subscription failed cannot refresh
+              description: Exporter leader reports a failed or unaccepted subscription response. Check exporter logs; existing tunnels may still be running.
+  - name: old accepted data alerts but never-accepted and follower data do not
+    interval: 1m
+    input_series:
+      - series: 'xray_subscription_last_success_timestamp{name="old",job="xray",instance="leader"}'
+        values: '1+0x160'
+      - series: 'xray_subscription_last_success_timestamp{name="fresh",job="xray",instance="leader"}'
+        values: '1+60x160'
+      - series: 'xray_subscription_last_success_timestamp{name="never",job="xray",instance="leader"}'
+        values: '0+0x160'
+      - series: 'xray_subscription_last_success_timestamp{name="old",job="xray",instance="follower"}'
+        values: '1+0x160'
+      - series: 'xray_exporter_leader{job="xray",instance="leader"}'
+        values: '1+0x160'
+      - series: 'xray_exporter_leader{job="xray",instance="follower"}'
+        values: '0+0x160'
+    alert_rule_test:
+      - eval_time: 130m
+        alertname: XraySubscriptionDataStale
+        exp_alerts: []
+      - eval_time: 150m
+        alertname: XraySubscriptionDataStale
+        exp_alerts:
+          - exp_labels:
+              name: old
+              job: xray
+              instance: leader
+              severity: warning
+            exp_annotations:
+              summary: Subscription old has stale server data
+              description: Exporter leader has not accepted a newly fetched response for more than two hours. Adjust this policy for the configured update_interval.
+  - name: demotion and removed sources resolve alerts
+    interval: 1m
+    input_series:
+      - series: 'xray_subscription_up{name="failed",job="xray",instance="old-leader"}'
+        values: '0+0x12'
+      - series: 'xray_exporter_leader{job="xray",instance="old-leader"}'
+        values: '1+0x6 0+0x6'
+      - series: 'xray_subscription_up{name="removed",job="xray",instance="leader"}'
+        values: '0+0x6 stale'
+      - series: 'xray_exporter_leader{job="xray",instance="leader"}'
+        values: '1+0x12'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: XraySubscriptionRefreshFailed
+        exp_alerts: []

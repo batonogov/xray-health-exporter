@@ -1,0 +1,27 @@
+groups:
+  - name: xray-subscriptions
+    rules:
+      - alert: XraySubscriptionRefreshFailed
+        expr: |
+          (xray_subscription_up == 0)
+          and on (job, instance) (xray_exporter_leader == 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Subscription {{ $labels.name }} cannot refresh'
+          description: 'Exporter {{ $labels.instance }} reports a failed or unaccepted subscription response. Check exporter logs; existing tunnels may still be running.'
+
+      # This example assumes sources refresh more often than every two hours.
+      # Increase 7200 for longer schedules, or use source-specific rule selectors.
+      - alert: XraySubscriptionDataStale
+        expr: |
+          ((time() - xray_subscription_last_success_timestamp) > 7200)
+          and (xray_subscription_last_success_timestamp > 0)
+          and on (job, instance) (xray_exporter_leader == 1)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Subscription {{ $labels.name }} has stale server data'
+          description: 'Exporter {{ $labels.instance }} has not accepted a newly fetched response for more than two hours. Adjust this policy for the configured update_interval.'

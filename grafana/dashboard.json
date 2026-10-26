@@ -50,7 +50,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Monitoring Xray-core tunnels health",
+  "description": "Xray tunnel health and subscription refresh monitoring; subscription panels are scoped to active leaders.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -477,6 +477,359 @@
       "targets": [
         { "expr": "time() - xray_tunnel_last_success_timestamp{name=~\"$tunnel\",server=~\"$server\"}", "legendFormat": "{{name}} ({{server}})", "refId": "A" }
       ]
+    },
+    {
+      "id": 200,
+      "title": "Subscriptions (active leaders)",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "title": "Subscription Refresh Status",
+      "description": "1 = last refresh accepted; 0 = failed or no accepted data. Retained follower series are excluded.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "scheme",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "none",
+          "decimals": 0,
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "xray_subscription_up{job=~\"$exporter_job\",instance=~\"$exporter_instance\",name=~\"$subscription\"} and on (job, instance) (xray_exporter_leader{job=~\"$exporter_job\",instance=~\"$exporter_instance\"} == 1)",
+          "legendFormat": "{{name}} · {{job}} / {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "id": 201
+    },
+    {
+      "title": "Accepted Subscription Servers",
+      "description": "Accepted server count per source; retained data can remain active after refresh failures.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 50,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "scheme",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "xray_subscription_servers{job=~\"$exporter_job\",instance=~\"$exporter_instance\",name=~\"$subscription\"} and on (job, instance) (xray_exporter_leader{job=~\"$exporter_job\",instance=~\"$exporter_instance\"} == 1)",
+          "legendFormat": "{{name}} · {{job}} / {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "id": 202
+    },
+    {
+      "title": "Subscription Data Age",
+      "description": "Age of the original fetched response accepted by the exporter. Never-accepted sources have no age and show DOWN in Refresh Status.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "scheme",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "s",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "(time() - xray_subscription_last_success_timestamp{job=~\"$exporter_job\",instance=~\"$exporter_instance\",name=~\"$subscription\"}) and (xray_subscription_last_success_timestamp{job=~\"$exporter_job\",instance=~\"$exporter_instance\",name=~\"$subscription\"} > 0) and on (job, instance) (xray_exporter_leader{job=~\"$exporter_job\",instance=~\"$exporter_instance\"} == 1)",
+          "legendFormat": "{{name}} · {{job}} / {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "id": 203
+    },
+    {
+      "title": "Subscription Refresh Errors",
+      "description": "Refresh errors per second. Zero means no new failures in the selected rate interval.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "scheme",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "ops",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "min"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(xray_subscription_refresh_errors_total{job=~\"$exporter_job\",instance=~\"$exporter_instance\",name=~\"$subscription\"}[$__rate_interval]) and on (job, instance) (xray_exporter_leader{job=~\"$exporter_job\",instance=~\"$exporter_instance\"} == 1)",
+          "legendFormat": "{{name}} · {{job}} / {{instance}}",
+          "refId": "A"
+        }
+      ],
+      "id": 204
     }
   ],
   "refresh": "30s",
@@ -502,13 +855,76 @@
         "options": [],
         "query": { "query": "label_values(xray_tunnel_up{name=~\"$tunnel\"}, server)", "refId": "StandardVariableQuery" },
         "refresh": 1, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"
-      }
-    ]
+      },
+    {
+      "name": "exporter_job",
+      "label": "Exporter job",
+      "type": "query",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "query": {
+        "query": "label_values(xray_exporter_leader, job)",
+        "refId": "StandardVariableQuery"
+      },
+      "definition": "label_values(xray_exporter_leader, job)",
+      "refresh": 2,
+      "includeAll": true,
+      "allValue": ".*",
+      "multi": true,
+      "current": {},
+      "options": [],
+      "sort": 1
+    },
+    {
+      "name": "exporter_instance",
+      "label": "Exporter instance",
+      "type": "query",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "query": {
+        "query": "label_values(xray_exporter_leader{job=~\"$exporter_job\"}, instance)",
+        "refId": "StandardVariableQuery"
+      },
+      "definition": "label_values(xray_exporter_leader{job=~\"$exporter_job\"}, instance)",
+      "refresh": 2,
+      "includeAll": true,
+      "allValue": ".*",
+      "multi": true,
+      "current": {},
+      "options": [],
+      "sort": 1
+    },
+    {
+      "name": "subscription",
+      "label": "Subscription",
+      "type": "query",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "query": {
+        "query": "label_values(xray_subscription_up{job=~\"$exporter_job\",instance=~\"$exporter_instance\"}, name)",
+        "refId": "StandardVariableQuery"
+      },
+      "definition": "label_values(xray_subscription_up{job=~\"$exporter_job\",instance=~\"$exporter_instance\"}, name)",
+      "refresh": 2,
+      "includeAll": true,
+      "allValue": ".*",
+      "multi": true,
+      "current": {},
+      "options": [],
+      "sort": 1
+    }
+  ]
   },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "Xray Health Exporter",
   "uid": "xray-health-exporter",
-  "version": 1
+  "version": 2
 }

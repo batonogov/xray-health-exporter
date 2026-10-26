@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.0](https://github.com/batonogov/xray-health-exporter/compare/v1.7.6...v1.8.0) (2026-10-26)
+
+
+### Features
+
+* expand subscription support and upgrade Go/Xray-core ([#171](https://github.com/batonogov/xray-health-exporter/issues/171)) ([14bd1b1](https://github.com/batonogov/xray-health-exporter/commit/14bd1b1863735347418ad685328122b2ec94352b))
+
+
+### Bug Fixes
+
+* reject unsafe probe intervals and timeouts ([#174](https://github.com/batonogov/xray-health-exporter/issues/174)) ([c8ba2c3](https://github.com/batonogov/xray-health-exporter/commit/c8ba2c3920a54a04f3e1cdd00bcbc27db9df1735))
+
 ## [1.7.6](https://github.com/batonogov/xray-health-exporter/compare/v1.7.5...v1.7.6) (2026-10-14)
 
 

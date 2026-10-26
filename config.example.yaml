@@ -14,11 +14,17 @@ defaults:
   download_timeout: "60s"
   download_min_size: 51200
 
-# Подписки могут возвращать обычный текст или standard/URL-safe Base64.
-# Из ответа принимаются только ссылки vless://
+# Подписки: текст/Base64 (VLESS, VMess, Trojan, Shadowsocks), Xray JSON или Clash.
+# При ошибке сохраняется последний рабочий список в памяти.
 subscriptions:
   - url: "https://provider.example.com/subscribe?token=replace-me"
+    name: "primary"
     update_interval: "1h"
+    timeout: "30s"
+    format: "auto"
+    # user_agent: "compatible-client"
+    # headers:
+    #   Authorization: "Bearer replace-me"
 
 # Список статических туннелей для мониторинга
 tunnels:

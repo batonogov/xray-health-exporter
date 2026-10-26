@@ -102,6 +102,7 @@ func WatchConfigFile(ctx context.Context, tm *TunnelManager, configFile string) 
 
 	// Debounce timer to avoid multiple reloads
 	var debounceTimer *time.Timer
+	var debounceC <-chan time.Time
 	debounceDuration := 1 * time.Second
 	defer func() {
 		if debounceTimer != nil {
@@ -133,16 +134,24 @@ func WatchConfigFile(ctx context.Context, tm *TunnelManager, configFile string) 
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Chmod) {
 				slog.Info("config file changed", "path", event.Name)
 
-				// Reset debounce timer
-				if debounceTimer != nil {
-					debounceTimer.Stop()
-				}
-
-				debounceTimer = time.AfterFunc(debounceDuration, func() {
-					if err := tm.reloadConfig(absConfig); err != nil {
-						slog.Error("failed to reload config after file change", "error", err)
+				if debounceTimer == nil {
+					debounceTimer = time.NewTimer(debounceDuration)
+				} else {
+					if !debounceTimer.Stop() {
+						select {
+						case <-debounceTimer.C:
+						default:
+						}
 					}
-				})
+					debounceTimer.Reset(debounceDuration)
+				}
+				debounceC = debounceTimer.C
+			}
+
+		case <-debounceC:
+			debounceC = nil
+			if err := tm.reloadConfigContext(ctx, absConfig, false); err != nil {
+				slog.Error("failed to reload config after file change", "error", err)
 			}
 
 		case err, ok := <-watcher.Errors:
@@ -154,39 +163,68 @@ func WatchConfigFile(ctx context.Context, tm *TunnelManager, configFile string) 
 	}
 }
 
-// WatchSubscriptions periodically reloads the configuration to refresh
-// subscription-based tunnels. Blocks until ctx is canceled.
+// WatchSubscriptions schedules each source independently and remains alive when
+// there are no subscriptions, so hot reload can add the first source.
 func WatchSubscriptions(ctx context.Context, tm *TunnelManager, configFile string) {
-	tm.mu.RLock()
-	cfg := tm.config
-	tm.mu.RUnlock()
-
-	if cfg == nil || len(cfg.Subscriptions) == 0 {
-		return
-	}
-
-	// Find minimum update interval
-	minInterval := 1 * time.Hour
-	for _, sub := range cfg.Subscriptions {
-		d, err := time.ParseDuration(sub.UpdateInterval)
-		if err == nil && d < minInterval {
-			minInterval = d
-		}
-	}
-
-	ticker := time.NewTicker(minInterval)
-	defer ticker.Stop()
-
-	slog.Info("subscription watcher started", "interval", minInterval)
-
 	for {
+		delay := tm.nextSubscriptionDelay(time.Now())
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			if err := tm.reloadConfig(configFile); err != nil {
+		case <-tm.changed:
+			timer.Stop()
+			continue
+		case <-timer.C:
+			if err := tm.reloadConfigContext(ctx, configFile, true); err != nil {
 				slog.Warn("subscription reload failed", "error", err)
+				// Fetch attempts already have a next deadline. Only throttle
+				// failures without a future deadline (e.g. an unreadable file).
+				if tm.nextSubscriptionDelay(time.Now()) > 0 {
+					continue
+				}
+				retry := time.NewTimer(time.Second)
+				select {
+				case <-ctx.Done():
+					retry.Stop()
+					return
+				case <-retry.C:
+				}
 			}
 		}
 	}
+}
+
+func (tm *TunnelManager) nextSubscriptionDelay(now time.Time) time.Duration {
+	tm.reloadMu.Lock()
+	defer tm.reloadMu.Unlock()
+	tm.mu.RLock()
+	cfg := tm.config
+	tm.mu.RUnlock()
+	if tm.desiredConfig != nil {
+		cfg = tm.desiredConfig
+	}
+	delay := 24 * time.Hour
+	if cfg == nil {
+		return delay
+	}
+	for _, sub := range cfg.Subscriptions {
+		interval, err := time.ParseDuration(sub.UpdateInterval)
+		if err != nil || interval <= 0 {
+			continue
+		}
+		state, exists := tm.sources[subscriptionKey(sub)]
+		due := interval
+		if exists {
+			due = state.lastAttempt.Add(interval).Sub(now)
+		}
+		if due < 0 {
+			due = 0
+		}
+		if due < delay {
+			delay = due
+		}
+	}
+	return delay
 }

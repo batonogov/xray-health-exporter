@@ -1398,7 +1398,7 @@ func TestResolveSubscriptions_NoSubscriptions(t *testing.T) {
 	}
 }
 
-func TestResolveSubscriptions_FiltersNonVLESS(t *testing.T) {
+func TestResolveSubscriptions_AcceptsSupportedProtocols(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		content := "vless://uuid@host.com:443?type=tcp&security=tls&sni=host.com&fp=chrome#VLESS-Server\nss://data@host2.com:8388#SS-Server\ntrojan://pwd@host3.com:443#Trojan-Server\nvmess://base64data#VMess-Server"
 		w.Write([]byte(base64Encode(content)))
@@ -1410,8 +1410,8 @@ func TestResolveSubscriptions_FiltersNonVLESS(t *testing.T) {
 	}
 
 	tunnels := ResolveSubscriptions(config)
-	if len(tunnels) != 1 {
-		t.Fatalf("expected 1 VLESS tunnel, got %d", len(tunnels))
+	if len(tunnels) != 4 {
+		t.Fatalf("expected 4 supported tunnels, got %d", len(tunnels))
 	}
 	if tunnels[0].Name != "VLESS-Server" {
 		t.Errorf("tunnel[0].Name = %v, want VLESS-Server", tunnels[0].Name)

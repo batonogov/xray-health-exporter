@@ -52,12 +52,29 @@ Applied to every tunnel unless the tunnel overrides the field.
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `url` | yes | — | Returns a plain-text or standard/URL-safe Base64 server list |
-| `update_interval` | no | `1h` | How often to refresh |
+| `url` | yes | — | Absolute HTTP(S) subscription URL |
+| `name` | no | `subscription-N` in metrics | Stable, nonsecret source name |
+| `update_interval` | no | `1h` | Positive Go duration; scheduled separately per source |
+| `timeout` | no | `30s` | Positive request timeout |
+| `format` | no | `auto` | `auto`, `text`, `xray`, or `clash` |
+| `user_agent` | no | Go HTTP client default | Override User-Agent for provider compatibility |
+| `headers` | no | — | Map of request headers, including provider authentication |
 
-Only lowercase `vless://` URLs are accepted from subscription responses; other entries are skipped. Fetches use a 30-second timeout and read at most 10 MiB. A tunnel name comes from the URL fragment, or from `host:port` when the fragment is absent.
+Supported response formats:
 
-The watcher cadence is calculated once at startup from the shortest configured `update_interval`. Adding the first subscription through hot reload fetches it once but does not start periodic refresh; changing intervals does not retune an existing watcher. Restart the exporter to apply either watcher change.
+- Plain-text or standard/URL-safe Base64 lists of `vless://`, `vmess://`, `trojan://`, and `ss://` links. Exact duplicate lines are collapsed. Names come from link fragments or VMess remarks, with generated fallbacks.
+- Native Xray JSON: one complete config or an array of configs. Each config becomes one monitored tunnel; its routing and outbounds stay together. Exporter-controlled logging and a local SOCKS inbound replace the supplied `log` and `inbounds`.
+- Clash YAML proxy lists for the supported protocol and transport subset. These are converted into individual Xray tunnels; Clash policy groups and routing are not executed. Unsupported proxy options fail explicitly.
+
+Clash conversion supports `tcp`, `ws`, and `grpc`, TLS with certificate verification, and VLESS Reality. Common fields are `name`, `type`, `server`, `port`, and `udp`; protocol fields are `uuid`/`flow` (VLESS), `uuid`/`cipher`/`alterId: 0` (VMess), `password` (Trojan), and `cipher`/`password` (Shadowsocks). Transport fields are `ws-opts.path`, `ws-opts.headers`, and `grpc-opts.grpc-service-name`. TLS uses `servername` or `sni`, `client-fingerprint`, and `alpn`; Reality uses `reality-opts.public-key` and `reality-opts.short-id`. Nonzero VMess alter IDs, `skip-cert-verify: true`, external Shadowsocks plugins, and unsupported options are rejected.
+
+VMess share links support Base64 JSON and URI forms. Shadowsocks supports SIP002 and legacy whole-link Base64; Trojan supports transport/TLS parameters shared with VLESS. Other client formats, including sing-box documents, SSR, and Hysteria share links, are not converted. Native Xray JSON remains the path for other configurations supported by the embedded core.
+
+Requests are limited to 10 MiB. Empty, malformed, unsupported, and oversized responses are errors, rather than instructions to delete servers. Custom authentication headers are removed on cross-origin redirects. Errors do not include the subscription URL or response body.
+
+Each source keeps its last successfully applied list **in memory** when refresh fails. A source without a usable cached list prevents the new configuration from being applied. In daemon mode, newly configured sources retry automatically on their schedules even if their first request fails. The cache does not survive restarts. Remove a source from YAML to intentionally remove its tunnels. Subscription metrics distinguish a failed refresh from unhealthy proxy servers. `RUN_ONCE` fails if any subscription cannot be loaded, even if other sources work.
+
+The watcher applies new sources and changed intervals without a restart. Unchanged tunnels retain their running Xray instances and SOCKS ports. New or modified tunnels start before removed instances stop. Replacing a changed tunnel that uses an already occupied explicit `socks_port` requires a restart or a different port; unchanged explicit ports are reused.
 
 #### VLESS URL compatibility
 
@@ -85,7 +102,7 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 | Field | Type | Notes |
 |---|---|---|
 | `name` | string | Optional; defaults to `host:port`. Used in logs and as the `name` metric label |
-| `url` | string | VLESS connection URL |
+| `url` | string | VLESS, VMess, Trojan, or Shadowsocks connection URL |
 | `xray_config_file` | string | Path to a native Xray JSON config. The exporter replaces `log` and `inbounds`; other sections are preserved |
 | `check_url` | string | Overrides `defaults.check_url` |
 | `check_interval` | duration | Overrides `defaults.check_interval` |

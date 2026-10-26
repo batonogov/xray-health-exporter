@@ -96,4 +96,5 @@ type TunnelInstance struct {
 	DownloadTimeout   time.Duration
 	DownloadMinSize   int64
 	cancelFunc        context.CancelFunc
+	checkerDone       chan struct{}
 }

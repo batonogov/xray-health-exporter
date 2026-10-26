@@ -2,11 +2,14 @@ package tunnel
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
 	"math/rand/v2"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,11 @@ import (
 // TunnelManager manages tunnel instances with thread-safe access.
 type TunnelManager struct {
 	mu            sync.RWMutex
+	reloadMu      sync.Mutex
+	sources       map[string]subscriptionState
+	desiredConfig *config.Config
+	fingerprints  map[*TunnelInstance]string
+	changed       chan struct{}
 	instances     []*TunnelInstance
 	NextSocksPort int
 	config        *config.Config
@@ -30,7 +38,7 @@ type TunnelManager struct {
 // Pass nil for defaults; the caller (cmd/exporter) should inject production
 // implementations.
 func NewTunnelManager(checker HealthChecker, mu MetricsUpdater) *TunnelManager {
-	return &TunnelManager{checker: checker, metrics: mu}
+	return &TunnelManager{checker: checker, metrics: mu, sources: make(map[string]subscriptionState), fingerprints: make(map[*TunnelInstance]string), changed: make(chan struct{}, 1)}
 }
 
 // InitTunnel creates and starts a single tunnel instance from config.
@@ -96,7 +104,17 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 	var vlessConfig *VLESSConfig
 	var metricLabels MetricLabels
 
-	if tunnel.XrayConfigFile != "" {
+	if len(tunnel.XrayConfigJSON) > 0 {
+		xrayConfigJSON, metricLabels, err = LoadXrayConfigJSON(tunnel.XrayConfigJSON, socksPort)
+		if err != nil {
+			return nil, err
+		}
+	} else if tunnel.URL != "" && !strings.HasPrefix(tunnel.URL, "vless://") {
+		xrayConfigJSON, metricLabels, err = CreateShareLinkConfig(tunnel.URL, socksPort)
+		if err != nil {
+			return nil, err
+		}
+	} else if tunnel.XrayConfigFile != "" {
 		// xray_config_file mode
 		xrayConfigJSON, metricLabels, err = LoadXrayConfigFile(tunnel.XrayConfigFile, socksPort)
 		if err != nil {
@@ -121,7 +139,7 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 		}
 	}
 
-	slog.Debug("xray config", "tunnel", tunnel.Name, "config", slog.String("config_json", string(xrayConfigJSON)))
+	slog.Debug("starting Xray instance", "tunnel", tunnel.Name, "socks_port", socksPort)
 
 	xrayInstance, err := StartXray(xrayConfigJSON)
 	if err != nil {
@@ -235,7 +253,8 @@ func InitializeTunnels(cfg *config.Config, baseSocksPort int, checker HealthChec
 	for _, ti := range tunnelInstances {
 		ctx, cancel := context.WithCancel(context.Background())
 		ti.cancelFunc = cancel
-		go RunTunnelChecker(ctx, ti, checker, mu)
+		ti.checkerDone = make(chan struct{})
+		go func() { defer close(ti.checkerDone); RunTunnelChecker(ctx, ti, checker, mu) }()
 	}
 
 	return tunnelInstances, nextAutoPort, nil
@@ -249,6 +268,13 @@ func StopTunnels(instances []*TunnelInstance) {
 		}
 		if ti.XrayInstance != nil {
 			ti.XrayInstance.Close()
+		}
+	}
+	// A check already in flight may still record metrics after cancellation.
+	// Join before callers remove its metric series.
+	for _, ti := range instances {
+		if ti.checkerDone != nil {
+			<-ti.checkerDone
 		}
 	}
 }
@@ -404,65 +430,252 @@ func CleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 	}
 }
 
-// reloadConfig gracefully reloads configuration using a "start new, then stop
-// old" strategy to avoid downtime: new tunnels are started on fresh ports
-// before old ones are stopped.
-func (tm *TunnelManager) reloadConfig(configFile string) error {
-	slog.Info("reloading configuration", "config_file", configFile)
+// subscriptionState keeps the last successfully applied response separately from
+// the attempt time, so a temporary outage never deletes working tunnels.
+type subscriptionState struct {
+	tunnels     []config.Tunnel
+	staged      []config.Tunnel // Fetched successfully, awaiting an atomic candidate apply.
+	lastAttempt time.Time
+}
 
-	metrics.IncConfigReloadTotal()
+func subscriptionKey(sub config.Subscription) string {
+	sub.UpdateInterval = ""
+	data, _ := json.Marshal(sub)
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
 
-	// Load new config
-	newConfig, err := config.LoadConfig(configFile)
+func tunnelFingerprint(t config.Tunnel) (string, error) {
+	data, err := json.Marshal(t)
 	if err != nil {
-		slog.Error("failed to load new config", "error", err)
-		metrics.IncConfigReloadErrorsTotal()
-		return fmt.Errorf("failed to load config: %v", err)
+		return "", err
 	}
+	if t.XrayConfigFile != "" {
+		contents, err := os.ReadFile(t.XrayConfigFile)
+		if err != nil {
+			return "", err
+		}
+		data = append(data, contents...)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
 
-	// Resolve subscriptions
-	subTunnels := config.ResolveSubscriptions(newConfig)
-	newConfig.Tunnels = append(newConfig.Tunnels, subTunnels...)
+func (tm *TunnelManager) reloadConfig(configFile string) error {
+	return tm.reloadConfigContext(context.Background(), configFile, false)
+}
 
-	if len(newConfig.Tunnels) == 0 {
-		slog.Error("no tunnels after resolving subscriptions, keeping current config")
-		metrics.IncConfigReloadErrorsTotal()
+// reloadConfigContext serializes file changes and subscription refreshes. File
+// changes reuse cached responses; scheduled refreshes fetch only due sources.
+func (tm *TunnelManager) reloadConfigContext(ctx context.Context, configFile string, refresh bool) (err error) {
+	tm.reloadMu.Lock()
+	defer tm.reloadMu.Unlock()
+	metrics.IncConfigReloadTotal()
+	defer func() {
+		if err != nil {
+			metrics.IncConfigReloadErrorsTotal()
+		}
+	}()
+	cfg, err := config.LoadConfig(configFile)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	// Keep retry scheduling separate from the currently applied tunnels. A
+	// newly added source must be retried even if its first response fails.
+	tm.desiredConfig = cfg
+	defer func() {
+		select {
+		case tm.changed <- struct{}{}:
+		default:
+		}
+	}()
+	if tm.sources == nil {
+		tm.sources = make(map[string]subscriptionState)
+	}
+	pending := make(map[string]subscriptionState)
+	fetched := make(map[string]int)
+	stagedApplied := make(map[string]int)
+	failed := make(map[string]bool)
+	var activeNames []string
+	var unresolved error
+	validatingCandidate := false
+	defer func() {
+		if err != nil && validatingCandidate {
+			for key, state := range tm.sources {
+				state.staged = nil
+				tm.sources[key] = state
+			}
+		}
+	}()
+	defer func() {
+		for name, count := range fetched {
+			metrics.RecordSubscriptionRefresh(name, count, err)
+		}
+		if err == nil {
+			for name, count := range stagedApplied {
+				if _, fresh := fetched[name]; !fresh && !failed[name] {
+					metrics.RecordSubscriptionRefresh(name, count, nil)
+				}
+			}
+		}
+	}()
+	for i, sub := range cfg.Subscriptions {
+		name := sub.Name
+		if name == "" {
+			name = fmt.Sprintf("subscription-%d", i+1)
+		}
+		activeNames = append(activeNames, name)
+		key := subscriptionKey(sub)
+		state, exists := tm.sources[key]
+		interval, _ := time.ParseDuration(sub.UpdateInterval)
+		if !exists || (!refresh && len(state.tunnels) == 0 && len(state.staged) == 0) || (refresh && !time.Now().Before(state.lastAttempt.Add(interval))) {
+			tunnels, fetchErr := config.FetchSubscriptionContext(ctx, sub)
+			state.lastAttempt = time.Now()
+			// Record failed attempts too, avoiding a tight retry loop.
+			tm.sources[key] = state
+			if fetchErr == nil && len(tunnels) == 0 {
+				fetchErr = fmt.Errorf("empty subscription response")
+			}
+			if fetchErr != nil {
+				failed[name] = true
+				metrics.RecordSubscriptionRefresh(name, len(state.tunnels), fetchErr)
+				slog.Warn("subscription refresh failed; retaining previous tunnels", "subscription_index", i, "error", fetchErr)
+			} else {
+				state.staged = tunnels
+				tm.sources[key] = state
+				fetched[name] = len(tunnels)
+			}
+		}
+		// Preserve successful responses across other sources' retry deadlines,
+		// but promote them to last-good only after the entire candidate applies.
+		if len(state.staged) != 0 {
+			state.tunnels = state.staged
+			state.staged = nil
+			stagedApplied[name] = len(state.tunnels)
+		}
+		if len(state.tunnels) == 0 {
+			unresolved = fmt.Errorf("subscription %d has no usable cached response", i+1)
+			continue
+		}
+		pending[key] = state
+		for _, tunnel := range state.tunnels {
+			config.ApplyTunnelDefaults(&tunnel, cfg.Defaults)
+			cfg.Tunnels = append(cfg.Tunnels, tunnel)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if unresolved != nil {
+		return unresolved
+	}
+	validatingCandidate = true
+	if len(cfg.Tunnels) == 0 {
 		return fmt.Errorf("no tunnels to initialize")
 	}
-
-	// Validate all tunnels before attempting to start new ones
-	if err := config.ValidateTunnels(newConfig); err != nil {
-		slog.Error("config validation failed, keeping current tunnels", "error", err)
-		metrics.IncConfigReloadErrorsTotal()
-		return fmt.Errorf("config validation failed: %v", err)
+	if err := config.ValidateTunnels(cfg); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
 	}
+	if err := tm.reconcile(ctx, cfg); err != nil {
+		return err
+	}
+	tm.sources = pending
+	metrics.CleanupSubscriptionMetrics(activeNames)
+	return nil
+}
 
-	// Start new tunnels on next available ports (no overlap with current)
+// reconcile starts only changed tunnels and keeps the old set intact if a new
+// instance cannot start. Ports still owned by the old set remain reserved.
+func (tm *TunnelManager) reconcile(ctx context.Context, cfg *config.Config) error {
 	tm.mu.RLock()
-	newBasePort := tm.NextSocksPort
+	old := append([]*TunnelInstance(nil), tm.instances...)
 	tm.mu.RUnlock()
-
-	newInstances, nextAutoPort, err := InitializeTunnels(newConfig, newBasePort, tm.checker, tm.metrics)
-	if err != nil {
-		slog.Error("failed to start new tunnels, keeping current", "error", err)
-		metrics.IncConfigReloadErrorsTotal()
-		return fmt.Errorf("failed to initialize tunnels: %v", err)
+	available := make(map[string][]*TunnelInstance)
+	occupied := make(map[int]bool)
+	for _, ti := range old {
+		occupied[ti.SocksPort] = true
+		if key := tm.fingerprints[ti]; key != "" {
+			available[key] = append(available[key], ti)
+		}
 	}
-
-	// New tunnels are running — safe to swap and stop old ones
+	for _, t := range cfg.Tunnels {
+		if t.SocksPort != 0 {
+			occupied[t.SocksPort] = true
+		}
+	}
+	var next, created []*TunnelInstance
+	keys := make(map[*TunnelInstance]string)
+	retained := make(map[*TunnelInstance]bool)
+	rollback := func(err error) error { StopTunnels(created); return err }
+	for _, t := range cfg.Tunnels {
+		key, err := tunnelFingerprint(t)
+		if err != nil {
+			return rollback(err)
+		}
+		if candidates := available[key]; len(candidates) > 0 {
+			ti := candidates[0]
+			available[key] = candidates[1:]
+			retained[ti] = true
+			keys[ti] = key
+			next = append(next, ti)
+			continue
+		}
+		port := t.SocksPort
+		if port == 0 {
+			port = metrics.DefaultSocksPort
+			for port <= 65535 && occupied[port] {
+				port++
+			}
+			if port > 65535 {
+				return rollback(fmt.Errorf("no SOCKS ports available"))
+			}
+		} else {
+			for _, ti := range old {
+				if ti.SocksPort == port {
+					return rollback(fmt.Errorf("cannot replace active tunnel on explicit socks_port %d; restart required", port))
+				}
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return rollback(err)
+		}
+		ti, err := InitTunnel(&t, port)
+		if err != nil {
+			return rollback(fmt.Errorf("failed to initialize tunnel %q: %w", t.Name, err))
+		}
+		created = append(created, ti)
+		if err := WaitForSOCKSPort(port, metrics.SocksStartupTimeout); err != nil {
+			return rollback(err)
+		}
+		occupied[port] = true
+		next = append(next, ti)
+		keys[ti] = key
+	}
+	if err := ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	for _, ti := range created {
+		checkCtx, cancel := context.WithCancel(ctx)
+		ti.cancelFunc = cancel
+		ti.checkerDone = make(chan struct{})
+		go func() { defer close(ti.checkerDone); RunTunnelChecker(checkCtx, ti, tm.checker, tm.metrics) }()
+	}
 	tm.mu.Lock()
-	oldInstances := tm.instances
-	tm.instances = newInstances
-	tm.NextSocksPort = nextAutoPort
-	tm.config = newConfig
+	tm.instances = next
+	tm.config = cfg
+	tm.fingerprints = keys
+	tm.NextSocksPort = metrics.DefaultSocksPort
+	for occupied[tm.NextSocksPort] {
+		tm.NextSocksPort++
+	}
 	tm.mu.Unlock()
-
-	StopTunnels(oldInstances)
-	CleanupRemovedTunnelMetrics(oldInstances, newInstances)
-
-	metrics.SetTunnelsConfigured(len(newInstances))
-
-	slog.Info("configuration reloaded successfully", "tunnel_count", len(newInstances))
+	var removed []*TunnelInstance
+	for _, ti := range old {
+		if !retained[ti] {
+			removed = append(removed, ti)
+		}
+	}
+	StopTunnels(removed)
+	CleanupRemovedTunnelMetrics(removed, next)
+	metrics.SetTunnelsConfigured(len(next))
 	return nil
 }
 
@@ -527,35 +740,10 @@ func NewPrometheusMetrics() MetricsUpdater {
 // canceled. On return all tunnel instances are stopped and per-tunnel metrics
 // are cleared.
 func RunProbing(ctx context.Context, configFile string, checker HealthChecker, mu MetricsUpdater) error {
-	cfg, err := config.LoadConfig(configFile)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
-	}
-
-	subTunnels := config.ResolveSubscriptions(cfg)
-	cfg.Tunnels = append(cfg.Tunnels, subTunnels...)
-
-	if len(cfg.Tunnels) == 0 {
-		return fmt.Errorf("no tunnels to initialize (including subscriptions)")
-	}
-
-	slog.Debug("loaded config", "tunnel_count", len(cfg.Tunnels))
-
 	tunnelManager := NewTunnelManager(checker, mu)
-
-	tunnelInstances, nextAutoPort, err := InitializeTunnels(cfg, metrics.DefaultSocksPort, tunnelManager.checker, tunnelManager.metrics)
-	if err != nil {
-		return fmt.Errorf("failed to initialize tunnels: %v", err)
+	if err := tunnelManager.reloadConfigContext(ctx, configFile, false); err != nil {
+		return err
 	}
-
-	tunnelManager.mu.Lock()
-	tunnelManager.instances = tunnelInstances
-	tunnelManager.NextSocksPort = nextAutoPort
-	tunnelManager.config = cfg
-	tunnelManager.mu.Unlock()
-
-	metrics.SetTunnelsConfigured(len(tunnelInstances))
-
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -569,10 +757,13 @@ func RunProbing(ctx context.Context, configFile string, checker HealthChecker, m
 		WatchSubscriptions(ctx, tunnelManager, configFile)
 	}()
 
-	slog.Info("probing started", "tunnel_count", len(tunnelInstances))
+	slog.Info("probing started")
 	slog.Info("config auto-reload enabled", "config_file", configFile)
 
 	<-ctx.Done()
+	wg.Wait()
+	tunnelManager.reloadMu.Lock()
+	defer tunnelManager.reloadMu.Unlock()
 
 	tunnelManager.mu.Lock()
 	finalInstances := tunnelManager.instances
@@ -583,7 +774,6 @@ func RunProbing(ctx context.Context, configFile string, checker HealthChecker, m
 	CleanupRemovedTunnelMetrics(finalInstances, nil)
 	metrics.SetTunnelsConfigured(0)
 
-	wg.Wait()
 	slog.Info("probing stopped")
 	return nil
 }

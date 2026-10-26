@@ -28,7 +28,7 @@ internal/leaderelection/ — ReadLeaderElectionConfig, RunWithLeaderElection (k8
 
 ### `internal/config`
 
-`Config` / `Defaults` / `Tunnel` / `Subscription`. `Defaults` holds default values; each `Tunnel` overrides them. A `Tunnel` has two mutually exclusive modes: `url` (VLESS URL) or `xray_config_file` (path to native Xray JSON). Check-method fields: `CheckMethod`, `IPCheckURL`, `DownloadURL`, `DownloadTimeout`, `DownloadMinSize`. Validation: `Tunnel.Validate()` and `ValidateTunnels()` (also checks `socks_port` uniqueness and range). Default priority: per-tunnel YAML → YAML `defaults:` → the five fields supported by `ApplyEnvDefaults` → built-in constants in `internal/metrics`.
+`Config` / `Defaults` / `Tunnel` / `Subscription`. `Defaults` holds default values; each `Tunnel` overrides them. A `Tunnel` has two mutually exclusive modes: `url` (VLESS/VMess/Trojan/Shadowsocks URL) or `xray_config_file` (path to native Xray JSON); subscriptions can also provide an in-memory native Xray config. Check-method fields: `CheckMethod`, `IPCheckURL`, `DownloadURL`, `DownloadTimeout`, `DownloadMinSize`. Validation: `Tunnel.Validate()` and `ValidateTunnels()` (also checks `socks_port` uniqueness and range). Default priority: per-tunnel YAML → YAML `defaults:` → the five fields supported by `ApplyEnvDefaults` → built-in constants in `internal/metrics`.
 
 ### `internal/checker`
 
@@ -55,7 +55,7 @@ internal/leaderelection/ — ReadLeaderElectionConfig, RunWithLeaderElection (k8
 
 #### `watcher.go`
 
-`WatchConfigFile` (fsnotify → reload), `WatchSubscriptions` (periodic update by the minimum `update_interval`).
+`WatchConfigFile` (fsnotify → reload), `WatchSubscriptions` (dynamic, independent deadlines per subscription).
 
 #### `run_once.go`
 
@@ -83,9 +83,10 @@ All Prometheus metrics ([metrics.md](./metrics.md)) and optional Pushgateway pus
 
 On config file change (fsnotify) or subscription update, old and new tunnels are compared. Unchanged instances are **reused** — an Xray instance is not recreated unless necessary (port conflicts). Validation runs **before** stopping existing tunnels (`ValidateTunnels`) so a bad reload is rejected without dropping running tunnels. Metrics of removed tunnels are cleaned via `CleanupRemovedTunnelMetrics`.
 
-### Subscription reload limitations
+### Subscription refresh
 
-- The watcher calculates its interval once at startup from the **minimum** `update_interval` in the initial config.
-- Only `vless://` URLs are accepted from subscription responses.
-- Adding the first subscription through config hot reload fetches it during that reload, but does **not** start periodic refresh.
-- Changing intervals or adding a subscription with a shorter interval does not retune an existing watcher. Restart to apply either watcher change.
+A serialized refresh resolves only due sources, retaining a last-good response per source in memory. New sources without a usable response reject the update; failures for cached sources retain their running tunnels. Response state commits only after the complete candidate configuration starts successfully. Source identity includes request options but excludes the refresh interval.
+
+The watcher runs even when no subscriptions exist and wakes on config changes. Desired source schedules are tracked separately from the applied tunnel configuration, so a newly added source retries automatically if its first request fails. Adding the first source or changing intervals does not require a restart. Reconciliation fingerprints effective tunnel settings (and native file contents), reuses unchanged instances, and allocates free ports for changed instances. A changed tunnel cannot replace another running instance on the same explicit SOCKS port; use a different port or restart.
+
+`RUN_ONCE` reports subscription failures instead of silently checking only a partial server list.

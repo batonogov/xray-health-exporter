@@ -9,7 +9,7 @@ This file is the canonical source of agent guidance. `CLAUDE.md` is a thin point
 
 ## Project overview
 
-Prometheus exporter on **Go 1.26+** for monitoring Xray-core tunnels. Supports VLESS URLs, native Xray JSON configs (`xray_config_file`), and subscription URLs for automatic server fetching. Uses **embedded Xray-core** (`github.com/xtls/xray-core`) as a library — it does **not** spawn an external process. For each tunnel a local SOCKS5 inbound is raised, and health checks run through it.
+Prometheus exporter on **Go 1.27+** for monitoring Xray-core tunnels. Supports VLESS/VMess/Trojan/Shadowsocks URLs, native Xray JSON configs (`xray_config_file`), and subscription URLs for automatic server fetching. Uses **embedded Xray-core** (`github.com/xtls/xray-core`) as a library — it does **not** spawn an external process. For each tunnel a local SOCKS5 inbound is raised, and health checks run through it.
 
 Three selectable check methods per tunnel via `check_method`: `http` (default, GET + accepted status), `ip` (IP-echo through the proxy compared to the host's real public IP), `download` (≥ `download_min_size` bytes received). The `http` method accepts status `200`, `301`, `302`, or `307`; `ip` and `download` require status `200`. Latency is **TTFB** (time to first byte) in all methods, instrumented via `net/http/httptrace`.
 
@@ -79,7 +79,7 @@ See [`docs/architecture.md`](./docs/architecture.md) for the full package map, k
 - **Hot reload** compares old vs new tunnels; unchanged instances are reused. Do **not** recreate an Xray instance unnecessarily — ports can conflict. Metrics of removed tunnels are cleaned via `CleanupRemovedTunnelMetrics`.
 - **`xray_config_file`**: the full JSON is loaded, but its `log` and `inbounds` sections are replaced with exporter-controlled settings (including one local SOCKS5 inbound). Other top-level sections, including `outbounds`, are preserved. Runtime support is limited to protocols and transports registered by the Xray-core version pinned in `go.mod`.
 - **VLESS share links**: accepted transports are `tcp`/`raw`, `xhttp`/`splithttp`, `grpc`, `ws`/`websocket`, `httpupgrade`, and `kcp`/`mkcp`. Legacy `http`/`h2`/`h3` aliases normalize to XHTTP `stream-one`; unsupported transports, security values, duplicate query parameters, and malformed JSON parameters are rejected.
-- **Subscriptions**: the watcher interval is calculated once at startup from the minimum `update_interval`. Server-list changes rebuild tunnels like hot reload. Only `vless://` URLs are accepted. Adding the first subscription via hot reload fetches it once but does **not** start a watcher; changing intervals or adding a shorter interval does not retune the existing watcher. Restart to apply either watcher change.
+- **Subscriptions**: text/Base64 share links, native Xray JSON single/array configs, and a supported subset of Clash proxy lists. Each source refreshes independently; intervals and new sources apply on hot reload. Failed refreshes retain last-good state in memory; empty/invalid responses are errors. Unchanged instances are reused. RUN_ONCE fails on any subscription error.
 - **`/metrics`** can be protected by Basic Auth (`METRICS_PROTECTED=true`); credentials are compared via `crypto/subtle.ConstantTimeCompare`. `/health` is always open (for k8s probes).
 - **Pushgateway push** is complementary: the pull `/metrics` endpoint stays available; push runs only on the leader (fail-closed via the `xray_exporter_leader` gauge).
 

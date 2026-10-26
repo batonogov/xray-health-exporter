@@ -3,6 +3,7 @@ package tunnel
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -427,10 +428,34 @@ func LoadXrayConfigFile(path string, socksPort int) ([]byte, MetricLabels, error
 	if err != nil {
 		return nil, MetricLabels{}, fmt.Errorf("failed to read xray config file: %v", err)
 	}
+	return LoadXrayConfigJSON(data, socksPort)
+}
 
+// LoadXrayConfigJSON injects the exporter-controlled inbound into a native
+// Xray configuration while preserving its outbound, routing, and DNS settings.
+func LoadXrayConfigJSON(data []byte, socksPort int) ([]byte, MetricLabels, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, MetricLabels{}, fmt.Errorf("failed to parse xray config JSON: %v", err)
+	}
+	if raw == nil {
+		return nil, MetricLabels{}, fmt.Errorf("xray config must be an object")
+	}
+	outbounds, ok := raw["outbounds"].([]interface{})
+	if !ok || len(outbounds) == 0 {
+		return nil, MetricLabels{}, fmt.Errorf("xray config must contain outbounds")
+	}
+	for _, outbound := range outbounds {
+		object, ok := outbound.(map[string]interface{})
+		if !ok {
+			return nil, MetricLabels{}, fmt.Errorf("xray outbound must be an object")
+		}
+		if protocol, ok := object["protocol"].(string); !ok || protocol == "" {
+			return nil, MetricLabels{}, fmt.Errorf("xray outbound requires a protocol")
+		}
+	}
+	if socksPort < 1 || socksPort > 65535 {
+		return nil, MetricLabels{}, fmt.Errorf("SOCKS port must be between 1 and 65535")
 	}
 
 	labels := ExtractMetricLabelsFromXrayConfig(raw)
@@ -488,7 +513,7 @@ func ExtractMetricLabelsFromXrayConfig(raw map[string]interface{}) MetricLabels 
 				addr, _ := server["address"].(string)
 				port, _ := server["port"].(float64)
 				if addr != "" && port > 0 {
-					labels.Server = fmt.Sprintf("%s:%d", addr, int(port))
+					labels.Server = net.JoinHostPort(addr, strconv.Itoa(int(port)))
 				}
 			}
 		}
@@ -499,7 +524,7 @@ func ExtractMetricLabelsFromXrayConfig(raw map[string]interface{}) MetricLabels 
 					addr, _ := server["address"].(string)
 					port, _ := server["port"].(float64)
 					if addr != "" && port > 0 {
-						labels.Server = fmt.Sprintf("%s:%d", addr, int(port))
+						labels.Server = net.JoinHostPort(addr, strconv.Itoa(int(port)))
 					}
 				}
 			}

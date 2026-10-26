@@ -2,6 +2,9 @@ package tunnel
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,4 +181,19 @@ func assertGaugeValue(t *testing.T, output, name, want string) {
 		}
 	}
 	t.Errorf("expected xray_tunnel_up line for tunnel %q in output, got:\n%s", name, output)
+}
+
+func TestRunOnceFailsOnPartialSubscriptionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "unavailable", 503) }))
+	defer server.Close()
+	dir := t.TempDir()
+	native := filepath.Join(dir, "xray.json")
+	os.WriteFile(native, []byte(`{"outbounds":[{"protocol":"freedom"}]}`), 0600)
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(fmt.Sprintf("tunnels:\n  - name: static\n    xray_config_file: %q\nsubscriptions:\n  - url: %q\n", native, server.URL)), 0600)
+	var out bytes.Buffer
+	up, err := RunOnce(path, fakeChecker{}, NewPrometheusMetrics(), &out)
+	if err == nil || up {
+		t.Fatalf("partial subscription failure returned up=%v err=%v", up, err)
+	}
 }

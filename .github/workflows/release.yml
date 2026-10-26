@@ -48,7 +48,7 @@ jobs:
       - name: Настройка Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
 
       - name: Сборка
         env:
@@ -164,6 +164,6 @@ jobs:
               ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
             ```
 
-            Туннели можно задавать тремя способами: VLESS URL, нативный Xray JSON-конфиг (`xray_config_file`) и subscription URL со списком VLESS-ссылок.
+            Туннели можно задавать тремя способами: ссылки VLESS/VMess/Trojan/Shadowsocks, нативный Xray JSON-конфиг (`xray_config_file`) и subscription URL (текст/Base64, Xray JSON или поддерживаемый список Clash).
             См. [config.example.yaml](https://github.com/${{ github.repository }}/blob/main/config.example.yaml) для полного примера конфигурации.
           files: artifacts/*/xray-health-exporter-*

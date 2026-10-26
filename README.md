@@ -20,6 +20,8 @@ Prometheus exporter for monitoring Xray-core tunnels.
 - Per-tunnel settings
 - Optional Pushgateway delivery, Kubernetes leader election, and one-shot execution
 
+> Documentation on `main` describes the current source. For an installed binary or Docker image, use the README at its release tag; new features may not yet be in `latest`. The Helm chart updates its application version separately.
+
 ## Installation
 
 **Download a pre-built binary:**
@@ -123,12 +125,14 @@ xray_tunnel_last_success_timestamp{name="Server 1",server="example.com:443",secu
 xray_tunnel_http_status{name="Server 1",server="example.com:443",security="reality",sni="google.com"} 200
 ```
 
-> The `name` label contains the tunnel name from the config (or `host:port` if no name is specified). Labels allow monitoring multiple servers simultaneously
+> The `name` label uses the configured name, subscription metadata, or a generated fallback; see the naming rules under Configuration. Labels identify individual tunnels.
 
 **Endpoints:**
 
 - `/metrics` - Prometheus metrics
-- `/health` - health check; always open even when `/metrics` uses Basic Auth
+- `/health` - HTTP-server liveness: returns `200` while the server is running; does not check tunnel/subscription readiness and never requires Basic Auth
+
+When using `xray_config_file` in Docker, mount the JSON file separately at its configured path. Remove unused demo tunnels and subscriptions: a failed initial subscription fetch prevents startup.
 
 ## Configuration
 
@@ -172,7 +176,7 @@ tunnels:
 ```
 
 **Tunnel parameters:**
-- `name` (optional) - tunnel name for logs. If not specified, `host:port` is used
+- `name` (optional) - tunnel name for logs and metrics. Static tunnels use the server endpoint, or `tunnel-port-N` if unavailable; subscriptions use response metadata or generated names
 - `url` - VLESS, VMess, Trojan, or Shadowsocks URL (mutually exclusive with `xray_config_file`)
 - `xray_config_file` - path to a native Xray JSON config (mutually exclusive with `url`). The exporter replaces its `log` and `inbounds` sections with exporter-controlled settings; other top-level sections, including `outbounds`, are preserved
 - `check_url` (optional) - URL for availability checks
@@ -200,10 +204,11 @@ VLESS URLs follow the current Xray share-link format. Supported transports are `
 **Notes:**
 - At least one tunnel or subscription must be specified
 - Subscription lists support `vless://`, `vmess://`, `trojan://`, and `ss://`; unsupported formats/options fail explicitly
+- Upgrade note: an unsupported entry rejects the entire subscription response; unknown protocols are no longer silently skipped
 - VMess supports `auto`, `aes-128-gcm`, and `chacha20-poly1305`; `none`, `zero`, and KCP seeds are rejected. Subscription redirects never send `Referer`
 - Sources refresh independently; new subscriptions and interval changes apply without a restart. Failed refreshes retain the last working list in memory; unchanged tunnels keep running
 - Empty or invalid responses never remove servers. Remove a subscription from YAML to remove its servers. RUN_ONCE fails on any subscription error
-- `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md) Applying a saved response preserves newer fetch failures and the original fetch timestamp.
+- `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md). Applying a saved response preserves newer fetch failures and the original fetch timestamp.
 - SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
 - Duration format: "30s", "1m", "1h30m"
 - Configuration priority is per-tunnel YAML, then YAML `defaults`, supported environment defaults, and finally built-in defaults
@@ -213,7 +218,7 @@ VLESS URLs follow the current Xray share-link format. Supported transports are `
 Three health-check methods are available, configurable per tunnel via `check_method` (or globally via `defaults.check_method`):
 
 - **`http`** (default) - GET the `check_url`; status `200`, `301`, `302`, or `307` passes.
-- **`ip`** - GET an IP-echo service through the proxy and require status `200`, then compare the returned IP with the host's real public IP. The check passes if the IPs differ, confirming traffic actually routes through the proxy.
+- **`ip`** - GET an IP-echo service through the proxy with status `200`, then compare its response text with the direct host response. The current implementation compares strings without validating IP syntax: use a plain-text IP service. This is a heuristic; a working proxy can share the host's public IP.
 - **`download`** - Require status `200`, then download at least `download_min_size` bytes through the proxy within `download_timeout`.
 
 All three methods measure successful-check latency as TTFB (time to first byte). See [`docs/check-methods.md`](docs/check-methods.md) for exact pass/fail behavior.
@@ -254,7 +259,7 @@ tunnels:
 | `METRICS_USERNAME` | `metricsUser` | Basic Auth username for `/metrics` |
 | `METRICS_PASSWORD` | _(required when protected)_ | Basic Auth password for `/metrics` |
 | `METRICS_PUSH_URL` | _(empty)_ | Full Pushgateway URL; may include `user:pass@`. Empty disables push |
-| `METRICS_PUSH_INTERVAL` | min `check_interval`, or `30s` | Interval between pushes (Go duration string) |
+| `METRICS_PUSH_INTERVAL` | min static-tunnel `check_interval`, or `30s` | Set at startup; subscription tunnels are excluded |
 | `METRICS_INSTANCE` | `os.Hostname()` | Value of the `instance` grouping label for pushed metrics |
 
 ### Run-Once Mode
@@ -272,6 +277,8 @@ Set `RUN_ONCE=true` to execute a single check cycle and exit — useful for CI p
 ```bash
 RUN_ONCE=true CONFIG_FILE=./config.yaml go run ./cmd/exporter
 ```
+
+Loading or initialization failures exit RUN_ONCE before metrics are printed. Subscription status metrics (`xray_subscription_*`) are populated only in daemon mode.
 
 > **Note:** In run-once mode the HTTP server, config watcher, and subscription watcher are **not** started. Leader election is ignored — the check always runs locally.
 
@@ -319,7 +326,7 @@ env:
 
 Behavior:
 - Only the leader initializes Xray tunnels and publishes `xray_tunnel_*` metrics; `xray_exporter_leader=1`.
-- Followers respond to `/metrics` and `/health` but publish only `xray_exporter_leader=0` (no `xray_tunnel_*` series).
+- Followers respond to `/metrics` and `/health`, publish `xray_exporter_leader=0`, and retain general process/exporter metrics. The former leader's `xray_tunnel_*` series are cleared after its checks stop.
 - On graceful leader termination (SIGTERM), the Lease is released immediately (`ReleaseOnCancel`), and a follower takes over within ~`RetryPeriod` (~5s). On a hard crash — within `LeaseDuration` (~30s).
 
 **Warning:** If multiple different exporter deployments run in the same namespace, you **must** set a unique `LEADER_ELECTION_NAME` for each — otherwise they will contend for the same Lease.

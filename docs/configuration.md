@@ -22,7 +22,7 @@ Configuration sources, from highest to lowest priority: per-tunnel YAML → YAML
 | `METRICS_USERNAME` | `metricsUser` | Basic Auth username |
 | `METRICS_PASSWORD` | _(required when `METRICS_PROTECTED=true`)_ | Basic Auth password |
 | `METRICS_PUSH_URL` | _(empty)_ | Full Pushgateway URL (may include `user:pass@`); empty disables push |
-| `METRICS_PUSH_INTERVAL` | min `check_interval`, or `30s` | Push interval (Go duration string) |
+| `METRICS_PUSH_INTERVAL` | min static-tunnel `check_interval`, or `30s` | Set once at startup; subscription tunnels are not included in the inferred minimum |
 | `METRICS_INSTANCE` | `os.Hostname()` | Value of the `instance` grouping label for pushed metrics |
 | `LEADER_ELECTION` | `false` | `true` → enable k8s leader election (pod only) |
 | `LEADER_ELECTION_NAMESPACE` | _(from ServiceAccount, or required)_ | Namespace for the Lease object |
@@ -64,7 +64,7 @@ Supported response formats:
 
 - Plain-text or standard/URL-safe Base64 lists of `vless://`, `vmess://`, `trojan://`, and `ss://` links. Exact duplicate lines are collapsed. Names come from link fragments or VMess remarks, with generated fallbacks.
 - Native Xray JSON: one complete config or an array of configs. Each config becomes one monitored tunnel; its routing and outbounds stay together. Exporter-controlled logging and a local SOCKS inbound replace the supplied `log` and `inbounds`.
-- Clash YAML proxy lists for the supported protocol and transport subset. These are converted into individual Xray tunnels; Clash policy groups and routing are not executed. Unsupported proxy options fail explicitly.
+- Clash YAML/JSON proxy lists for the supported protocol and transport subset. These are converted into individual Xray tunnels; Clash policy groups and routing are not executed. Unsupported proxy options fail explicitly.
 
 Clash conversion supports `tcp`, `ws`, and `grpc`, TLS with certificate verification, and VLESS Reality. Common fields are `name`, `type`, `server`, `port`, and `udp`; protocol fields are `uuid`/`flow` (VLESS), `uuid`/`cipher`/`alterId: 0` (VMess), `password` (Trojan), and `cipher`/`password` (Shadowsocks). Transport fields are `ws-opts.path`, `ws-opts.headers`, and `grpc-opts.grpc-service-name`. TLS uses `servername` or `sni`, `client-fingerprint`, and `alpn`; Reality uses `reality-opts.public-key` and `reality-opts.short-id`. Nonzero VMess alter IDs, `skip-cert-verify: true`, external Shadowsocks plugins, and unsupported options are rejected.
 
@@ -75,6 +75,10 @@ Requests are limited to 10 MiB. Empty, malformed, unsupported, and oversized res
 Each source keeps its last successfully applied list **in memory** when refresh fails. A source without a usable cached list prevents the new configuration from being applied. In daemon mode, newly configured sources retry automatically on their schedules even if their first request fails. The cache does not survive restarts. Remove a source from YAML to intentionally remove its tunnels. Subscription metrics distinguish a failed refresh from unhealthy proxy servers. Applying an older staged response updates the accepted server count but preserves any newer fetch failure and the original successful fetch timestamp. `RUN_ONCE` fails if any subscription cannot be loaded, even if other sources work.
 
 The watcher applies new sources and changed intervals without a restart. Unchanged tunnels retain their running Xray instances and SOCKS ports. New or modified tunnels start before removed instances stop. Replacing a changed tunnel that uses an already occupied explicit `socks_port` requires a restart or a different port; unchanged explicit ports are reused.
+
+#### Upgrade behavior
+
+Unsupported entries reject the entire subscription response; they are not silently skipped as in older VLESS-only subscriptions. Mixed lists containing unsupported protocols must be filtered by the provider before use. A failed initial source with no accepted cache blocks startup; failed refreshes retain accepted state in memory. Use explicit, unique source names to keep metric identities stable when reordering subscriptions.
 
 #### VLESS URL compatibility
 
@@ -95,13 +99,13 @@ The URL parser follows the current Xray share-link proposal:
 
 Legacy `type=http`, `h2`, and `h3` links are normalized to XHTTP `stream-one`. For TLS and REALITY, `sni` defaults to the server address and `fp` defaults to `chrome`; REALITY requires `pbk`. The parser validates the presence of UUID and address, the port range, duplicate parameters, positive mKCP integers, and JSON-valued `extra`/`fm` before Xray starts.
 
-### `tunnels` (list)
+### `tunnels` (optional list when subscriptions are configured)
 
 Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 
 | Field | Type | Notes |
 |---|---|---|
-| `name` | string | Optional; defaults to `host:port`. Used in logs and as the `name` metric label |
+| `name` | string | Optional; static tunnels use the extracted server endpoint, or `tunnel-port-N` if unavailable. Subscription names come from their format-specific metadata or generated fallbacks |
 | `url` | string | VLESS, VMess, Trojan, or Shadowsocks connection URL |
 | `xray_config_file` | string | Path to a native Xray JSON config. The exporter replaces `log` and `inbounds`; other sections are preserved |
 | `check_url` | string | Overrides `defaults.check_url` |
@@ -118,4 +122,6 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 
 Runtime support for a native JSON config is limited to protocols and transports registered by the Xray-core version pinned in `go.mod`. Metric labels are derived from the first outbound when it uses VLESS/VMess `vnext` or Trojan/Shadowsocks `servers`; otherwise labels may be empty.
 
-Duration format: Go duration strings (`30s`, `1m`, `1h30m`). At least one tunnel or subscription is required. See [`config.example.yaml`](../config.example.yaml) for a full example.
+Duration format: Go duration strings (`30s`, `1m`, `1h30m`). Use strictly positive check intervals and timeouts: unlike subscription intervals, the current tunnel validation does not reject every nonpositive duration; `check_interval: "0s"` can crash the checker. At least one tunnel or subscription is required. See [`config.example.yaml`](../config.example.yaml) for a full example.
+
+Native `xray_config_file` paths resolve inside the exporter process/container, not relative to the YAML file. Mount these files separately when using Docker; mounting only `config.yaml` is insufficient. Replace all demo credentials/URLs and remove unused sample entries before starting.

@@ -1,6 +1,6 @@
 # Metrics
 
-Authoritative reference — generated from [`internal/metrics/metrics.go`](../internal/metrics/metrics.go).
+Reference maintained against [`metrics.go`](../internal/metrics/metrics.go) and [`subscriptions.go`](../internal/metrics/subscriptions.go).
 
 All `xray_tunnel_*` metrics carry the labels **`name`**, **`server`**, **`security`**, **`sni`**.
 
@@ -61,10 +61,12 @@ All subscription metrics use a single `name` label: the configured source name o
 | `xray_subscription_servers` | gauge | Number of servers in the accepted configuration, including a staged list applied after a later fetch failed |
 | `xray_subscription_refresh_errors_total` | counter | Failed fetches or newly rejected candidate responses; reusing staged data does not count as another attempt |
 
+Subscription status series are populated by the daemon subscription manager, not by RUN_ONCE. They can remain after a leader stops probing; in HA deployments, gate subscription alerts on `xray_exporter_leader == 1` for the same exporter instance.
+
 ## Endpoints
 
 - `/metrics` — Prometheus exposition (optionally protected by Basic Auth via `METRICS_PROTECTED`).
-- `/health` — always open (for k8s liveness/readiness probes).
+- `/health` — always open; returns HTTP 200 while the HTTP server is running. It is a process liveness check, not tunnel/subscription readiness.
 
 The default Prometheus registry also exposes standard `go_*` and `process_*` collectors. Pushgateway mode sends the full default registry, not only `xray_*` metrics.
 

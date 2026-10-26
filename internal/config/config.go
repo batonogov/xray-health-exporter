@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -274,11 +275,11 @@ func (t *Tunnel) Validate() error {
 		}
 	}
 
-	if _, err := time.ParseDuration(t.CheckInterval); err != nil {
-		errs = append(errs, fmt.Errorf("invalid check_interval: %v", err))
+	if _, err := ParsePositiveDuration(t.CheckInterval, "check_interval"); err != nil {
+		errs = append(errs, err)
 	}
-	if _, err := time.ParseDuration(t.CheckTimeout); err != nil {
-		errs = append(errs, fmt.Errorf("invalid check_timeout: %v", err))
+	if _, err := ParsePositiveDuration(t.CheckTimeout, "check_timeout"); err != nil {
+		errs = append(errs, err)
 	}
 	if u, err := url.Parse(t.CheckURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		errs = append(errs, fmt.Errorf("invalid check_url: must be http or https URL"))
@@ -296,12 +297,36 @@ func (t *Tunnel) Validate() error {
 
 	// Validate download_timeout if explicitly set.
 	if t.DownloadTimeout != "" {
-		if _, err := time.ParseDuration(t.DownloadTimeout); err != nil {
-			errs = append(errs, fmt.Errorf("invalid download_timeout: %v", err))
+		if _, err := ParsePositiveDuration(t.DownloadTimeout, "download_timeout"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
+	if t.MaxBackoff != "" {
+		if _, err := ParsePositiveDuration(t.MaxBackoff, "max_backoff"); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if t.BackoffMultiplier != nil && (math.IsNaN(*t.BackoffMultiplier) || math.IsInf(*t.BackoffMultiplier, 0) || *t.BackoffMultiplier < 1) {
+		errs = append(errs, errors.New("backoff_multiplier must be >= 1.0 and finite"))
+	}
+	if t.DownloadMinSize < 0 {
+		errs = append(errs, errors.New("download_min_size must be positive when specified"))
+	}
 	return errors.Join(errs...)
+}
+
+// ParsePositiveDuration validates durations used for scheduling and deadlines.
+// Zero and negative values would panic timers or disable request timeouts.
+func ParsePositiveDuration(value, field string) (time.Duration, error) {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", field)
+	}
+	return duration, nil
 }
 
 // ValidateTunnels checks that all tunnel configs are valid without starting

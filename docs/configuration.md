@@ -40,8 +40,8 @@ Applied to every tunnel unless the tunnel overrides the field.
 | `check_url` | string | `https://www.google.com` | URL for `http` checks |
 | `check_interval` | duration | `30s` | Time between checks |
 | `check_timeout` | duration | `30s` | Per-check timeout |
-| `max_backoff` | duration | `5m` | Max backoff on repeated failures; must be a valid Go duration |
-| `backoff_multiplier` | float | `2.0` | Backoff growth factor; must be ≥ 1.0 |
+| `max_backoff` | duration | `5m` | Max backoff on repeated failures; must be a positive Go duration |
+| `backoff_multiplier` | float | `2.0` | Backoff growth factor; must be finite and ≥ 1.0 |
 | `check_method` | string | `http` | `http` / `ip` / `download` |
 | `ip_check_url` | string | `https://api.ipify.org?format=text` | IP-echo URL for `ip` |
 | `download_url` | string | `https://proof.ovh.net/files/1Mb.dat` | File URL for `download` |
@@ -111,8 +111,8 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 | `check_url` | string | Overrides `defaults.check_url` |
 | `check_interval` | duration | Overrides `defaults.check_interval` |
 | `check_timeout` | duration | Overrides `defaults.check_timeout` |
-| `max_backoff` | duration | Overrides `defaults.max_backoff`; must be a valid Go duration |
-| `backoff_multiplier` | float | Overrides `defaults.backoff_multiplier`; must be ≥ 1.0 |
+| `max_backoff` | duration | Overrides `defaults.max_backoff`; must be a positive Go duration |
+| `backoff_multiplier` | float | Overrides `defaults.backoff_multiplier`; must be finite and ≥ 1.0 |
 | `socks_port` | int | Optional; auto-assigned from 1080 if unset. Validated unique, range 1–65535 |
 | `check_method` | string | `http` / `ip` / `download` |
 | `ip_check_url` | string | IP-echo URL for `ip` |
@@ -122,6 +122,6 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 
 Runtime support for a native JSON config is limited to protocols and transports registered by the Xray-core version pinned in `go.mod`. Metric labels are derived from the first outbound when it uses VLESS/VMess `vnext` or Trojan/Shadowsocks `servers`; otherwise labels may be empty.
 
-Duration format: Go duration strings (`30s`, `1m`, `1h30m`). Use strictly positive check intervals and timeouts: unlike subscription intervals, the current tunnel validation does not reject every nonpositive duration; `check_interval: "0s"` can crash the checker. At least one tunnel or subscription is required. See [`config.example.yaml`](../config.example.yaml) for a full example.
+Duration format: Go duration strings (`30s`, `1m`, `1h30m`). All check intervals, request timeouts, and `max_backoff` must be strictly positive. Invalid values reject startup or hot reload before any checker starts; the previous running configuration is retained on reload errors. `backoff_multiplier` must be finite and at least 1, and `download_min_size` cannot be negative (zero selects the default). At least one tunnel or subscription is required. See [`config.example.yaml`](../config.example.yaml) for a full example.
 
 Native `xray_config_file` paths resolve inside the exporter process/container, not relative to the YAML file. Mount these files separately when using Docker; mounting only `config.yaml` is insufficient. Replace all demo credentials/URLs and remove unused sample entries before starting.

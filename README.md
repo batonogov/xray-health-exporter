@@ -210,7 +210,7 @@ VLESS URLs follow the current Xray share-link format. Supported transports are `
 - Empty or invalid responses never remove servers. Remove a subscription from YAML to remove its servers. RUN_ONCE fails on any subscription error
 - `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md). Applying a saved response preserves newer fetch failures and the original fetch timestamp.
 - SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
-- Duration format: "30s", "1m", "1h30m"
+- Duration format: "30s", "1m", "1h30m" — intervals, timeouts, and max_backoff must be positive; invalid values reject startup/reload
 - Configuration priority is per-tunnel YAML, then YAML `defaults`, supported environment defaults, and finally built-in defaults
 
 ### Check methods

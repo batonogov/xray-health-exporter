@@ -56,10 +56,10 @@ All subscription metrics use a single `name` label: the configured source name o
 
 | Metric | Type | Description |
 |---|---|---|
-| `xray_subscription_up` | gauge | 1 if the last refresh was successfully applied, otherwise 0 |
-| `xray_subscription_last_success_timestamp` | gauge | Unix timestamp of the last successfully applied refresh |
-| `xray_subscription_servers` | gauge | Number of servers in the last successfully applied list; retained on failure |
-| `xray_subscription_refresh_errors_total` | counter | Failed refresh attempts |
+| `xray_subscription_up` | gauge | 1 when an accepted response exists and the latest refresh has not failed; applying older staged data does not clear a later failure |
+| `xray_subscription_last_success_timestamp` | gauge | Original fetch timestamp of the latest accepted response, or 0 before acceptance; never the later application time |
+| `xray_subscription_servers` | gauge | Number of servers in the accepted configuration, including a staged list applied after a later fetch failed |
+| `xray_subscription_refresh_errors_total` | counter | Failed fetches or newly rejected candidate responses; reusing staged data does not count as another attempt |
 
 ## Endpoints
 

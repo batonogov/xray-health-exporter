@@ -98,6 +98,11 @@ func clashProxy(p map[string]any) (Tunnel, error) {
 			if cipher == "" {
 				cipher = "auto"
 			}
+			switch cipher {
+			case "auto", "aes-128-gcm", "chacha20-poly1305":
+			default:
+				return Tunnel{}, errors.New("unsupported VMess cipher")
+			}
 			user["security"] = cipher
 		}
 		server["users"] = []any{user}

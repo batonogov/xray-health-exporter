@@ -200,9 +200,10 @@ VLESS URLs follow the current Xray share-link format. Supported transports are `
 **Notes:**
 - At least one tunnel or subscription must be specified
 - Subscription lists support `vless://`, `vmess://`, `trojan://`, and `ss://`; unsupported formats/options fail explicitly
+- VMess supports `auto`, `aes-128-gcm`, and `chacha20-poly1305`; `none`, `zero`, and KCP seeds are rejected. Subscription redirects never send `Referer`
 - Sources refresh independently; new subscriptions and interval changes apply without a restart. Failed refreshes retain the last working list in memory; unchanged tunnels keep running
 - Empty or invalid responses never remove servers. Remove a subscription from YAML to remove its servers. RUN_ONCE fails on any subscription error
-- `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md)
+- `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md) Applying a saved response preserves newer fetch failures and the original fetch timestamp.
 - SOCKS ports are assigned automatically starting from 1080 (1080, 1081, 1082...), or can be set explicitly per tunnel via `socks_port`
 - Duration format: "30s", "1m", "1h30m"
 - Configuration priority is per-tunnel YAML, then YAML `defaults`, supported environment defaults, and finally built-in defaults

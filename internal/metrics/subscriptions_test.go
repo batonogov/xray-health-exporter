@@ -1,32 +1,33 @@
 package metrics
 
 import (
-	"errors"
-	"testing"
-
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"testing"
+	"time"
 )
 
-func TestSubscriptionFailurePreservesLastSuccess(t *testing.T) {
+func TestSubscriptionStatePublicationPreservesFetchHistory(t *testing.T) {
 	CleanupSubscriptionMetrics(nil)
 	t.Cleanup(func() { CleanupSubscriptionMetrics(nil) })
-	RecordSubscriptionRefresh("primary", 3, nil)
-	stamp := testutil.ToFloat64(SubscriptionLastSuccess.WithLabelValues("primary"))
-	RecordSubscriptionRefresh("primary", 0, errors.New("unavailable"))
+	fetchedAt := time.Unix(1234567890, 0)
+	UpdateSubscriptionStatus("primary", true, fetchedAt, 3)
+	IncSubscriptionRefreshErrors("primary")
+	UpdateSubscriptionStatus("primary", false, fetchedAt, 3)
+	// A cached response may become accepted while the most recent fetch failed.
+	UpdateSubscriptionStatus("primary", false, fetchedAt, 4)
 	if testutil.ToFloat64(SubscriptionUp.WithLabelValues("primary")) != 0 ||
-		testutil.ToFloat64(SubscriptionServers.WithLabelValues("primary")) != 3 ||
-		testutil.ToFloat64(SubscriptionLastSuccess.WithLabelValues("primary")) != stamp || stamp == 0 ||
+		testutil.ToFloat64(SubscriptionServers.WithLabelValues("primary")) != 4 ||
+		testutil.ToFloat64(SubscriptionLastSuccess.WithLabelValues("primary")) != float64(fetchedAt.Unix()) ||
 		testutil.ToFloat64(SubscriptionRefreshErrors.WithLabelValues("primary")) != 1 {
-		t.Fatal("failed refresh must mark source down and retain last successful count and timestamp")
+		t.Fatal("publishing accepted data changed fetch history or error count")
 	}
-	RecordSubscriptionRefresh("secondary", 2, nil)
+	UpdateSubscriptionStatus("secondary", false, time.Time{}, 0)
+	if testutil.ToFloat64(SubscriptionLastSuccess.WithLabelValues("secondary")) != 0 {
+		t.Fatal("unaccepted source has a success timestamp")
+	}
 	CleanupSubscriptionMetrics([]string{"secondary"})
 	if testutil.CollectAndCount(SubscriptionUp) != 1 || testutil.CollectAndCount(SubscriptionServers) != 1 ||
 		testutil.CollectAndCount(SubscriptionLastSuccess) != 1 || testutil.CollectAndCount(SubscriptionRefreshErrors) != 1 {
 		t.Fatal("removed source left stale metrics")
-	}
-	RecordSubscriptionRefresh("secondary", 4, nil)
-	if testutil.ToFloat64(SubscriptionUp.WithLabelValues("secondary")) != 1 || testutil.ToFloat64(SubscriptionServers.WithLabelValues("secondary")) != 4 {
-		t.Fatal("successful refresh did not update source metrics")
 	}
 }

@@ -93,17 +93,56 @@ func TestSubscriptionTimeout(t *testing.T) {
 
 func TestSubscriptionRedirectDoesNotForwardSecrets(t *testing.T) {
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Token") != "" || r.Header.Get("Authorization") != "" {
+		if r.Header.Get("X-Token") != "" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
 			t.Error("credentials forwarded across origins")
+		}
+		if r.Referer() != "" {
+			t.Error("subscription URL forwarded in Referer across origins")
 		}
 		_, _ = w.Write([]byte("vless://uuid@host:443"))
 	}))
 	defer destination.Close()
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, http.StatusFound) }))
 	defer source.Close()
-	_, err := FetchSubscriptionContext(context.Background(), Subscription{URL: source.URL, Headers: map[string]string{"X-Token": "secret", "Authorization": "Bearer secret"}})
+	_, err := FetchSubscriptionContext(context.Background(), Subscription{URL: source.URL + "/subscription/private-token?token=secret", Headers: map[string]string{"X-Token": "secret", "Authorization": "Bearer secret", "Cookie": "session=secret"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSubscriptionSameOriginRedirectOmitsReferer(t *testing.T) {
+	for _, tc := range []struct{ name, referer string }{
+		{"automatic-referer", ""},
+		{"explicit-referer", "https://provider.example/private-token?token=secret"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Token") != "secret" || r.Header.Get("Authorization") != "Bearer secret" {
+					t.Error("same-origin authentication headers were lost")
+				}
+				if r.URL.Path == "/subscription/private-token" {
+					http.Redirect(w, r, "/redirect/second-token?token=second-secret", http.StatusFound)
+					return
+				}
+				if r.Referer() != "" {
+					t.Error("subscription URL forwarded in Referer on same-origin redirect")
+				}
+				if r.URL.Path == "/redirect/second-token" {
+					http.Redirect(w, r, "/servers", http.StatusFound)
+					return
+				}
+				_, _ = w.Write([]byte("vless://uuid@host:443"))
+			}))
+			defer server.Close()
+			headers := map[string]string{"X-Token": "secret", "Authorization": "Bearer secret"}
+			if tc.referer != "" {
+				headers["Referer"] = tc.referer
+			}
+			tunnels, err := FetchSubscriptionContext(context.Background(), Subscription{URL: server.URL + "/subscription/private-token?token=secret", Headers: headers})
+			if err != nil || len(tunnels) != 1 {
+				t.Fatalf("redirected fetch: got %d tunnels, error %v", len(tunnels), err)
+			}
+		})
 	}
 }
 

@@ -8,8 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf"
+	"github.com/xtls/xray-core/proxy/vmess"
+	vmessoutbound "github.com/xtls/xray-core/proxy/vmess/outbound"
 )
 
 func vmessTestLink(payload string) string {
@@ -189,5 +192,93 @@ func TestNativeXrayConfigRuntimeFeatures(t *testing.T) {
 	}
 	if err := instance.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestVMessBuiltCipherPreserved(t *testing.T) {
+	const uuid = "00000000-0000-4000-8000-000000000001"
+	for _, tc := range []struct {
+		cipher string
+		want   protocol.SecurityType
+	}{
+		{"", protocol.SecurityType_AUTO}, {"auto", protocol.SecurityType_AUTO},
+		{"aes-128-gcm", protocol.SecurityType_AES128_GCM},
+		{"chacha20-poly1305", protocol.SecurityType_CHACHA20_POLY1305},
+	} {
+		links := []string{
+			"vmess://" + uuid + "@example.com:443?scy=" + tc.cipher,
+			"vmess://" + uuid + "@example.com:443?encryption=" + tc.cipher,
+			vmessTestLink(`{"add":"example.com","port":443,"id":"` + uuid + `","scy":"` + tc.cipher + `"}`),
+		}
+		if tc.cipher != "" {
+			links = append(links, "vmess://"+tc.cipher+":"+uuid+"@example.com:443")
+		}
+		for _, link := range links {
+			data, _, err := CreateShareLinkConfig(link, 1080)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg conf.Config
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			built, err := cfg.Build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, err := built.Outbound[0].ProxySettings.GetInstance()
+			if err != nil {
+				t.Fatal(err)
+			}
+			accountMessage, err := message.(*vmessoutbound.Config).Receiver.User.Account.GetInstance()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := accountMessage.(*vmess.Account).SecuritySettings.Type
+			if got != tc.want {
+				t.Fatalf("cipher %q built as %v, want %v", tc.cipher, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestVMessRejectsUnsupportedCipherForms(t *testing.T) {
+	const uuid = "00000000-0000-4000-8000-000000000001"
+	for _, cipher := range []string{"none", "zero", "unknown"} {
+		for _, link := range []string{
+			"vmess://" + uuid + "@example.com:443?scy=" + cipher,
+			"vmess://" + uuid + "@example.com:443?encryption=" + cipher,
+			"vmess://" + cipher + ":" + uuid + "@example.com:443",
+			vmessTestLink(`{"add":"example.com","port":443,"id":"` + uuid + `","scy":"` + cipher + `"}`),
+		} {
+			if _, _, err := CreateShareLinkConfig(link, 1080); err == nil {
+				t.Fatalf("accepted unsupported cipher %s", cipher)
+			}
+		}
+	}
+	if _, _, err := CreateShareLinkConfig("vmess://"+uuid+"@example.com:443?scy=auto&encryption=aes-128-gcm", 1080); err == nil {
+		t.Fatal("accepted conflicting ciphers")
+	}
+}
+
+func TestVMessKCPAliasesRejectSeed(t *testing.T) {
+	const uuid = "00000000-0000-4000-8000-000000000001"
+	for _, network := range []string{"kcp", "mkcp"} {
+		for _, link := range []string{
+			"vmess://" + uuid + "@example.com:443?type=" + network + "&path=required-seed",
+			vmessTestLink(`{"add":"example.com","port":443,"id":"` + uuid + `","net":"` + network + `","path":"required-seed"}`),
+		} {
+			if _, _, err := CreateShareLinkConfig(link, 1080); err == nil {
+				t.Fatalf("accepted %s seed", network)
+			}
+		}
+		for _, link := range []string{
+			"vmess://" + uuid + "@example.com:443?type=" + network,
+			vmessTestLink(`{"add":"example.com","port":443,"id":"` + uuid + `","net":"` + network + `"}`),
+		} {
+			if _, _, err := CreateShareLinkConfig(link, 1080); err != nil {
+				t.Fatalf("unseeded %s rejected: %v", network, err)
+			}
+		}
 	}
 }

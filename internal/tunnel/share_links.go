@@ -223,9 +223,6 @@ func parseVMessLink(link string) (map[string]interface{}, error) {
 	if values["type"] != "" && values["type"] != "none" {
 		return nil, fmt.Errorf("VMess transport header disguise is unsupported")
 	}
-	if values["net"] == "kcp" && values["path"] != "" {
-		return nil, fmt.Errorf("VMess KCP seed is unsupported")
-	}
 	if values["add"] == "" || values["id"] == "" {
 		return nil, fmt.Errorf("VMess server and ID are required")
 	}
@@ -259,6 +256,14 @@ func parseVMessURL(link string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	q := u.Query()
+	// Check after JSON conversion so transport aliases and URI links use the
+	// same validation instead of silently discarding a required KCP seed.
+	if (q.Get("type") == "kcp" || q.Get("type") == "mkcp") && q.Get("path") != "" {
+		return nil, fmt.Errorf("VMess KCP seed is unsupported")
+	}
+	if q.Get("scy") != "" && q.Get("encryption") != "" && q.Get("scy") != q.Get("encryption") {
+		return nil, fmt.Errorf("conflicting VMess cipher parameters")
+	}
 	// Some URI exporters encode cipher:UUID as userinfo instead of using the
 	// scy/encryption query parameter. Accept it only when the cipher agrees.
 	if identity, present := u.User.Password(); present {
@@ -281,7 +286,7 @@ func parseVMessURL(link string) (map[string]interface{}, error) {
 		cipher = "auto"
 	}
 	switch cipher {
-	case "auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero":
+	case "auto", "aes-128-gcm", "chacha20-poly1305":
 	default:
 		return nil, fmt.Errorf("unsupported VMess cipher")
 	}

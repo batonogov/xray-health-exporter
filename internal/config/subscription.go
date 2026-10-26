@@ -78,6 +78,9 @@ func fetchSubscription(ctx context.Context, sub Subscription, allowEmpty bool) (
 		if len(via) >= 10 {
 			return errors.New("too many redirects")
 		}
+		// Go generates Referer from the previous URL, whose path or query can
+		// contain subscription credentials. Never send it, even to the same origin.
+		req.Header.Del("Referer")
 		// Custom headers may contain credentials. Do not forward them to another origin.
 		if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host) {
 			for name := range sub.Headers {

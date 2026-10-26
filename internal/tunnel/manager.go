@@ -433,9 +433,12 @@ func CleanupRemovedTunnelMetrics(oldInstances, newInstances []*TunnelInstance) {
 // subscriptionState keeps the last successfully applied response separately from
 // the attempt time, so a temporary outage never deletes working tunnels.
 type subscriptionState struct {
-	tunnels     []config.Tunnel
-	staged      []config.Tunnel // Fetched successfully, awaiting an atomic candidate apply.
-	lastAttempt time.Time
+	tunnels         []config.Tunnel
+	staged          []config.Tunnel // Fetched successfully, awaiting an atomic candidate apply.
+	lastAttempt     time.Time
+	stagedAt        time.Time
+	lastSuccess     time.Time
+	lastFetchFailed bool
 }
 
 func subscriptionKey(sub config.Subscription) string {
@@ -491,30 +494,28 @@ func (tm *TunnelManager) reloadConfigContext(ctx context.Context, configFile str
 		tm.sources = make(map[string]subscriptionState)
 	}
 	pending := make(map[string]subscriptionState)
-	fetched := make(map[string]int)
-	stagedApplied := make(map[string]int)
-	failed := make(map[string]bool)
+	names := make(map[string]string)
 	var activeNames []string
 	var unresolved error
 	validatingCandidate := false
 	defer func() {
+		// A staged response is counted as rejected only once. Keep accepted state
+		// intact, and retain any later failed HTTP status when publishing metrics.
 		if err != nil && validatingCandidate {
-			for key, state := range tm.sources {
-				state.staged = nil
-				tm.sources[key] = state
-			}
-		}
-	}()
-	defer func() {
-		for name, count := range fetched {
-			metrics.RecordSubscriptionRefresh(name, count, err)
-		}
-		if err == nil {
-			for name, count := range stagedApplied {
-				if _, fresh := fetched[name]; !fresh && !failed[name] {
-					metrics.RecordSubscriptionRefresh(name, count, nil)
+			for key := range names {
+				state := tm.sources[key]
+				if len(state.staged) != 0 {
+					metrics.IncSubscriptionRefreshErrors(names[key])
+					state.lastFetchFailed = true
+					state.staged = nil
+					state.stagedAt = time.Time{}
+					tm.sources[key] = state
 				}
 			}
+		}
+		for key, name := range names {
+			state := tm.sources[key]
+			metrics.UpdateSubscriptionStatus(name, len(state.tunnels) > 0 && !state.lastFetchFailed, state.lastSuccess, len(state.tunnels))
 		}
 	}()
 	for i, sub := range cfg.Subscriptions {
@@ -524,32 +525,33 @@ func (tm *TunnelManager) reloadConfigContext(ctx context.Context, configFile str
 		}
 		activeNames = append(activeNames, name)
 		key := subscriptionKey(sub)
+		names[key] = name
 		state, exists := tm.sources[key]
 		interval, _ := time.ParseDuration(sub.UpdateInterval)
 		if !exists || (!refresh && len(state.tunnels) == 0 && len(state.staged) == 0) || (refresh && !time.Now().Before(state.lastAttempt.Add(interval))) {
 			tunnels, fetchErr := config.FetchSubscriptionContext(ctx, sub)
 			state.lastAttempt = time.Now()
-			// Record failed attempts too, avoiding a tight retry loop.
-			tm.sources[key] = state
 			if fetchErr == nil && len(tunnels) == 0 {
 				fetchErr = fmt.Errorf("empty subscription response")
 			}
 			if fetchErr != nil {
-				failed[name] = true
-				metrics.RecordSubscriptionRefresh(name, len(state.tunnels), fetchErr)
+				state.lastFetchFailed = true
+				metrics.IncSubscriptionRefreshErrors(name)
 				slog.Warn("subscription refresh failed; retaining previous tunnels", "subscription_index", i, "error", fetchErr)
 			} else {
+				state.lastFetchFailed = false
 				state.staged = tunnels
-				tm.sources[key] = state
-				fetched[name] = len(tunnels)
+				state.stagedAt = state.lastAttempt
 			}
+			tm.sources[key] = state
 		}
 		// Preserve successful responses across other sources' retry deadlines,
 		// but promote them to last-good only after the entire candidate applies.
 		if len(state.staged) != 0 {
 			state.tunnels = state.staged
+			state.lastSuccess = state.stagedAt
 			state.staged = nil
-			stagedApplied[name] = len(state.tunnels)
+			state.stagedAt = time.Time{}
 		}
 		if len(state.tunnels) == 0 {
 			unresolved = fmt.Errorf("subscription %d has no usable cached response", i+1)

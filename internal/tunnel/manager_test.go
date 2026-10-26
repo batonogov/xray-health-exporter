@@ -17,6 +17,7 @@ import (
 	"github.com/batonogov/xray-health-exporter/internal/config"
 	"github.com/batonogov/xray-health-exporter/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 )
 
@@ -1461,5 +1462,208 @@ func TestPendingSourcesConvergeAcrossDifferentRefreshDeadlines(t *testing.T) {
 		if len(state.tunnels) != 1 || len(state.staged) != 0 {
 			t.Fatal("staged response was not promoted to last-good")
 		}
+	}
+}
+
+func TestStagedSubscriptionMetricsPreserveLatestFetchOutcome(t *testing.T) {
+	for _, sameTick := range []bool{false, true} {
+		t.Run(fmt.Sprintf("same_tick_%v", sameTick), func(t *testing.T) {
+			metrics.CleanupSubscriptionMetrics(nil)
+			defer metrics.CleanupSubscriptionMetrics(nil)
+			var failA, healthyB atomic.Bool
+			a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if failA.Load() {
+					http.Error(w, "outage", 503)
+					return
+				}
+				fmt.Fprint(w, `{"remarks":"a","outbounds":[{"protocol":"freedom"}]}`)
+			}))
+			defer a.Close()
+			b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !healthyB.Load() {
+					http.Error(w, "outage", 503)
+					return
+				}
+				fmt.Fprint(w, `{"remarks":"b","outbounds":[{"protocol":"freedom"}]}`)
+			}))
+			defer b.Close()
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			body := fmt.Sprintf("subscriptions:\n  - name: a\n    url: %q\n    update_interval: 2h\n  - name: b\n    url: %q\n    update_interval: 3h\n", a.URL, b.URL)
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			tm := NewTunnelManager(mockChecker{}, NewPrometheusMetrics())
+			defer func() { StopTunnels(tm.instances) }()
+			if err := tm.reloadConfig(path); err == nil {
+				t.Fatal("expected initial unresolved B")
+			}
+			// Force a distinctive historical fetch time to prove applying cached data
+			// does not substitute the current time for the actual successful request.
+			originalFetch := time.Unix(1234567890, 0)
+			keys := make(map[string]string)
+			for _, sub := range tm.desiredConfig.Subscriptions {
+				keys[sub.Name] = subscriptionKey(sub)
+			}
+			state := tm.sources[keys["a"]]
+			state.stagedAt = originalFetch
+			state.lastAttempt = time.Time{}
+			tm.sources[keys["a"]] = state
+			makeDue := func(name string) {
+				state := tm.sources[keys[name]]
+				state.lastAttempt = time.Time{}
+				tm.sources[keys[name]] = state
+			}
+			failA.Store(true)
+			if sameTick {
+				healthyB.Store(true)
+				makeDue("b")
+			}
+			err := tm.reloadConfigContext(context.Background(), path, true)
+			if !sameTick {
+				if err == nil {
+					t.Fatal("expected B still unresolved")
+				}
+				healthyB.Store(true)
+				makeDue("b")
+				err = tm.reloadConfigContext(context.Background(), path, true)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tm.instances) != 2 {
+				t.Fatal("staged response was not applied")
+			}
+			assertMetrics := func() {
+				t.Helper()
+				if got := testutil.ToFloat64(metrics.SubscriptionUp.WithLabelValues("a")); got != 0 {
+					t.Fatalf("latest failed fetch reported up=%v", got)
+				}
+				if got := testutil.ToFloat64(metrics.SubscriptionServers.WithLabelValues("a")); got != 1 {
+					t.Fatalf("accepted server count=%v", got)
+				}
+				if got := testutil.ToFloat64(metrics.SubscriptionLastSuccess.WithLabelValues("a")); got != float64(originalFetch.Unix()) {
+					t.Fatalf("success timestamp=%v, want original fetch", got)
+				}
+				if got := testutil.ToFloat64(metrics.SubscriptionRefreshErrors.WithLabelValues("a")); got != 1 {
+					t.Fatalf("failure counted %v times", got)
+				}
+			}
+			assertMetrics()
+			if err := tm.reloadConfig(path); err != nil {
+				t.Fatal(err)
+			}
+			assertMetrics()
+		})
+	}
+}
+
+func TestRejectedSubscriptionCandidateMetricsDoNotRepeat(t *testing.T) {
+	metrics.CleanupSubscriptionMetrics(nil)
+	defer metrics.CleanupSubscriptionMetrics(nil)
+	var invalid atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if invalid.Load() {
+			fmt.Fprint(w, `{"outbounds":[{"protocol":"invalid-protocol"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"outbounds":[{"protocol":"freedom"}]}`)
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("subscriptions:\n  - name: tested\n    url: %q\n", server.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tm := NewTunnelManager(mockChecker{}, NewPrometheusMetrics())
+	defer func() { StopTunnels(tm.instances) }()
+	if err := tm.reloadConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	stamp := testutil.ToFloat64(metrics.SubscriptionLastSuccess.WithLabelValues("tested"))
+	invalid.Store(true)
+	for key, state := range tm.sources {
+		state.lastAttempt = time.Time{}
+		tm.sources[key] = state
+	}
+	if err := tm.reloadConfigContext(context.Background(), path, true); err == nil {
+		t.Fatal("invalid candidate accepted")
+	}
+	for i := 0; i < 2; i++ {
+		if err := tm.reloadConfig(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if testutil.ToFloat64(metrics.SubscriptionUp.WithLabelValues("tested")) != 0 ||
+		testutil.ToFloat64(metrics.SubscriptionRefreshErrors.WithLabelValues("tested")) != 1 ||
+		testutil.ToFloat64(metrics.SubscriptionServers.WithLabelValues("tested")) != 1 ||
+		testutil.ToFloat64(metrics.SubscriptionLastSuccess.WithLabelValues("tested")) != stamp {
+		t.Fatal("cached reload changed rejected candidate metrics")
+	}
+}
+
+func TestUnnamedSubscriptionSourcesHaveIndependentCacheAndMetrics(t *testing.T) {
+	metrics.CleanupSubscriptionMetrics(nil)
+	defer metrics.CleanupSubscriptionMetrics(nil)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := requests.Add(1)
+		if attempt > 2 {
+			http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+			return
+		}
+		// The same URL may return different responses for independent sources.
+		fmt.Fprintf(w, `{"remarks":"response-%d","outbounds":[{"protocol":"freedom"}]}`, attempt)
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := fmt.Sprintf("subscriptions:\n  - url: %q\n    update_interval: 1h\n  - url: %q\n    update_interval: 2h\n", server.URL, server.URL)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tm := NewTunnelManager(mockChecker{}, NewPrometheusMetrics())
+	defer func() { StopTunnels(tm.instances) }()
+	if err := tm.reloadConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 || len(tm.sources) != 2 {
+		t.Fatalf("sources share cache: requests=%d cache entries=%d", requests.Load(), len(tm.sources))
+	}
+	first := subscriptionKey(tm.config.Subscriptions[0])
+	second := subscriptionKey(tm.config.Subscriptions[1])
+	if first == second {
+		t.Fatal("generated source identities have the same cache key")
+	}
+	for _, name := range []string{"subscription-1", "subscription-2"} {
+		if testutil.ToFloat64(metrics.SubscriptionUp.WithLabelValues(name)) != 1 || testutil.ToFloat64(metrics.SubscriptionServers.WithLabelValues(name)) != 1 {
+			t.Fatalf("missing successful source metrics for %s", name)
+		}
+	}
+	now := time.Now()
+	state := tm.sources[first]
+	state.lastAttempt = now.Add(-90 * time.Minute)
+	tm.sources[first] = state
+	state = tm.sources[second]
+	state.lastAttempt = now.Add(-90 * time.Minute)
+	tm.sources[second] = state
+	secondAttempt := state.lastAttempt
+	if delay := tm.nextSubscriptionDelay(now); delay != 0 {
+		t.Fatalf("first source should be due, delay=%v", delay)
+	}
+	if err := tm.reloadConfigContext(context.Background(), path, true); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 3 {
+		t.Fatalf("only first source should refresh, requests=%d", requests.Load())
+	}
+	if !tm.sources[second].lastAttempt.Equal(secondAttempt) {
+		t.Fatal("not-due source attempt was changed")
+	}
+	if testutil.ToFloat64(metrics.SubscriptionUp.WithLabelValues("subscription-1")) != 0 ||
+		testutil.ToFloat64(metrics.SubscriptionUp.WithLabelValues("subscription-2")) != 1 ||
+		testutil.ToFloat64(metrics.SubscriptionRefreshErrors.WithLabelValues("subscription-1")) != 1 ||
+		testutil.ToFloat64(metrics.SubscriptionRefreshErrors.WithLabelValues("subscription-2")) != 0 {
+		t.Fatal("one source's failure overwrote the other source's metrics")
+	}
+	if len(tm.instances) != 2 {
+		t.Fatal("failed refresh removed last-good tunnel")
 	}
 }

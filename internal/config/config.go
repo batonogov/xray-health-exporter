@@ -202,6 +202,9 @@ func LoadConfig(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("duplicate subscription name at index %d", i)
 		}
 		subscriptionNames[name] = true
+		// Persist the effective name so cache and scheduling identities distinguish
+		// unnamed sources even when their URL and request options are identical.
+		sub.Name = name
 		if err := validateSubscription(*sub); err != nil {
 			return nil, fmt.Errorf("subscription %d: %w", i, err)
 		}

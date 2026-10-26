@@ -58,6 +58,7 @@ type Subscription struct {
 // Tunnel describes a single tunnel configuration.
 type Tunnel struct {
 	Name              string          `yaml:"name"`
+	NameGenerated     bool            `yaml:"-" json:"-"`
 	URL               string          `yaml:"url"`
 	XrayConfigFile    string          `yaml:"xray_config_file"`
 	XrayConfigJSON    json.RawMessage `yaml:"-"`

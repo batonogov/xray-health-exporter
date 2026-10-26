@@ -48,7 +48,7 @@ Produced by `metrics.ClassifyError`:
 | `xray_exporter_leader` | gauge | — | 1 if actively probing tunnels (leader, or leader election disabled) |
 | `xray_exporter_config_reload_total` | counter | — | Configuration reload attempts |
 | `xray_exporter_config_reload_errors_total` | counter | — | Configuration reload errors |
-| `xray_exporter_tunnels_configured` | gauge | — | Current number of configured tunnels |
+| `xray_exporter_tunnels_configured` | gauge | — | Current number of unique configured monitors after cross-source deduplication |
 
 ## Subscription metrics
 
@@ -58,7 +58,7 @@ All subscription metrics use a single `name` label: the configured source name o
 |---|---|---|
 | `xray_subscription_up` | gauge | 1 when an accepted response exists and the latest refresh has not failed; applying older staged data does not clear a later failure |
 | `xray_subscription_last_success_timestamp` | gauge | Original fetch timestamp of the latest accepted response, or 0 before acceptance; never the later application time |
-| `xray_subscription_servers` | gauge | Number of servers in the accepted configuration, including a staged list applied after a later fetch failed |
+| `xray_subscription_servers` | gauge | Number of servers in this source’s accepted list before cross-source deduplication, including a staged list applied after a later fetch failed |
 | `xray_subscription_refresh_errors_total` | counter | Failed fetches or newly rejected candidate responses; reusing staged data does not count as another attempt |
 
 Subscription status series are populated by the daemon subscription manager, not by RUN_ONCE. They can remain after a leader stops probing; in HA deployments, gate subscription alerts on `xray_exporter_leader == 1` for the same exporter instance.

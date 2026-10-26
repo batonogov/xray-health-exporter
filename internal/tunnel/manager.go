@@ -43,31 +43,31 @@ func NewTunnelManager(checker HealthChecker, mu MetricsUpdater) *TunnelManager {
 
 // InitTunnel creates and starts a single tunnel instance from config.
 func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
-	checkInterval, err := time.ParseDuration(tunnel.CheckInterval)
+	checkInterval, err := config.ParsePositiveDuration(tunnel.CheckInterval, "check_interval")
 	if err != nil {
-		return nil, fmt.Errorf("invalid check_interval: %v", err)
+		return nil, err
 	}
 
-	checkTimeout, err := time.ParseDuration(tunnel.CheckTimeout)
+	checkTimeout, err := config.ParsePositiveDuration(tunnel.CheckTimeout, "check_timeout")
 	if err != nil {
-		return nil, fmt.Errorf("invalid check_timeout: %v", err)
+		return nil, err
 	}
 
 	maxBackoffStr := tunnel.MaxBackoff
 	if maxBackoffStr == "" {
 		maxBackoffStr = metrics.DefaultMaxBackoff.String()
 	}
-	maxBackoff, err := time.ParseDuration(maxBackoffStr)
+	maxBackoff, err := config.ParsePositiveDuration(maxBackoffStr, "max_backoff")
 	if err != nil {
-		return nil, fmt.Errorf("invalid max_backoff: %v", err)
+		return nil, err
 	}
 
 	backoffMultiplier := metrics.DefaultBackoffMult
 	if tunnel.BackoffMultiplier != nil {
 		backoffMultiplier = *tunnel.BackoffMultiplier
 	}
-	if backoffMultiplier < 1.0 {
-		return nil, fmt.Errorf("backoff_multiplier must be >= 1.0, got %v", backoffMultiplier)
+	if math.IsNaN(backoffMultiplier) || math.IsInf(backoffMultiplier, 0) || backoffMultiplier < 1.0 {
+		return nil, fmt.Errorf("backoff_multiplier must be >= 1.0 and finite, got %v", backoffMultiplier)
 	}
 
 	// Check method fields (issue #114).
@@ -90,14 +90,18 @@ func InitTunnel(tunnel *config.Tunnel, socksPort int) (*TunnelInstance, error) {
 	if downloadTimeoutStr == "" {
 		downloadTimeoutStr = metrics.DefaultDownloadTimeout.String()
 	}
-	downloadTimeout, err := time.ParseDuration(downloadTimeoutStr)
+	downloadTimeout, err := config.ParsePositiveDuration(downloadTimeoutStr, "download_timeout")
 	if err != nil {
-		return nil, fmt.Errorf("invalid download_timeout: %v", err)
+		return nil, err
 	}
 
 	downloadMinSize := tunnel.DownloadMinSize
 	if downloadMinSize == 0 {
 		downloadMinSize = metrics.DefaultDownloadMinSize
+	}
+
+	if downloadMinSize < 0 {
+		return nil, fmt.Errorf("download_min_size must be positive")
 	}
 
 	var xrayConfigJSON []byte

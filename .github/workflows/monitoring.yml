@@ -1,0 +1,34 @@
+name: Monitoring configuration
+
+on:
+  pull_request:
+    paths:
+      - 'grafana/**'
+      - 'examples/prometheus/**'
+      - 'scripts/check_monitoring.py'
+      - '.github/workflows/monitoring.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'grafana/**'
+      - 'examples/prometheus/**'
+      - 'scripts/check_monitoring.py'
+      - '.github/workflows/monitoring.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  monitoring:
+    runs-on: ubuntu-latest
+    env:
+      # promtool 3.15.1, pinned to the tested multi-platform image.
+      PROMTOOL_IMAGE: prom/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate dashboard layout and extract PromQL
+        run: python3 scripts/check_monitoring.py --output-rules /tmp/dashboard.rules.json
+      - name: Validate dashboard PromQL
+        run: docker run --rm --entrypoint /bin/promtool -v /tmp/dashboard.rules.json:/rules.json:ro "$PROMTOOL_IMAGE" check rules /rules.json
+      - name: Test subscription alerts
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/examples/prometheus:/rules:ro" -w /rules "$PROMTOOL_IMAGE" test rules subscriptions.test.yml

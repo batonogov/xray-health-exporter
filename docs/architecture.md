@@ -77,6 +77,10 @@ All Prometheus metrics ([metrics.md](./metrics.md)) and optional Pushgateway pus
 
 `ReadLeaderElectionConfig` (reads `LEADER_ELECTION_*`), `RunWithLeaderElection` (k8s lease; runs `tunnel.RunProbing` only on the leader; requires in-cluster config).
 
+An election owns one probing session. A probe error or unexpected return immediately demotes the leader gauge and stops the election; the error reaches the main shutdown path and produces exit status 1. Parent cancellation demotes the gauge and drains probes while the Lease is still renewed. Automatic `ReleaseOnCancel` is disabled: explicit release runs only after the probing callback and elector have both stopped, and checks current Lease ownership before updating it. Lease loss cancels and joins probes before returning.
+
+`RunProbing` permits one active daemon session per process. Its exit cleanup removes subscription series even when startup fails; a rejected concurrent session does not clear the active session’s metrics.
+
 ## Run modes (dispatch in `cmd/exporter/main.go`)
 
 1. **`RUN_ONCE=true`** — `tunnel.RunOnce` → one cycle → metrics to **stdout** → `os.Exit` (0 = all up, 1 = any down/error). Logs go to **stderr**; watchers/HTTP/leader-election do not start.

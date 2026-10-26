@@ -705,10 +705,18 @@ func NewPrometheusMetrics() MetricsUpdater {
 	return prometheusMetrics{}
 }
 
+// Only one daemon probing session may own the process-wide metric series.
+var probingSessionMu sync.Mutex
+
 // RunProbing initializes tunnels, starts watchers, and blocks until ctx is
 // canceled. On return all tunnel instances are stopped and per-tunnel metrics
 // are cleared.
 func RunProbing(ctx context.Context, configFile string, checker HealthChecker, mu MetricsUpdater) error {
+	if !probingSessionMu.TryLock() {
+		return fmt.Errorf("a probing session is already running")
+	}
+	defer probingSessionMu.Unlock()
+	defer metrics.CleanupSubscriptionMetrics(nil)
 	tunnelManager := NewTunnelManager(checker, mu)
 	if err := tunnelManager.reloadConfigContext(ctx, configFile, false); err != nil {
 		return err

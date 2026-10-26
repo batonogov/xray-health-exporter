@@ -329,8 +329,9 @@ env:
 
 Behavior:
 - Only the leader initializes Xray tunnels and publishes `xray_tunnel_*` metrics; `xray_exporter_leader=1`.
-- Followers respond to `/metrics` and `/health`, publish `xray_exporter_leader=0`, and retain general process/exporter metrics. The former leader's `xray_tunnel_*` series are cleared after its checks stop.
-- On graceful leader termination (SIGTERM), the Lease is released immediately (`ReleaseOnCancel`), and a follower takes over within ~`RetryPeriod` (~5s). On a hard crash — within `LeaseDuration` (~30s).
+- Followers respond to `/metrics` and `/health`, publish `xray_exporter_leader=0`, and retain general process/exporter metrics. The former leader's `xray_tunnel_*` and `xray_subscription_*` series are cleared after its checks stop.
+- On graceful leader termination (SIGTERM), the leader gauge is cleared immediately. Lease renewal continues while probes stop; the Lease is released only after probing and cleanup finish. A follower then takes over within ~`RetryPeriod` (~5s). On a hard crash — within `LeaseDuration` (~30s).
+- If probing fails or returns unexpectedly, the exporter clears its leader gauge, drains the probing session, releases its own Lease, and exits with status 1 so Kubernetes can restart it. Lease loss also stops and joins probing before the process exits.
 
 **Warning:** If multiple different exporter deployments run in the same namespace, you **must** set a unique `LEADER_ELECTION_NAME` for each — otherwise they will contend for the same Lease.
 

@@ -61,7 +61,7 @@ All subscription metrics use a single `name` label: the configured source name o
 | `xray_subscription_servers` | gauge | Number of servers in this source’s accepted list before cross-source deduplication, including a staged list applied after a later fetch failed |
 | `xray_subscription_refresh_errors_total` | counter | Failed fetches or newly rejected candidate responses; reusing staged data does not count as another attempt |
 
-Subscription status series are populated by the daemon subscription manager, not by RUN_ONCE. They can remain after a leader stops probing; in HA deployments, gate subscription alerts on `xray_exporter_leader == 1` for the same exporter instance.
+Subscription status series are populated by the daemon subscription manager, not by RUN_ONCE. They are removed when its probing session exits, including startup failure. During shutdown the leader gauge drops before probe cleanup completes; in HA deployments, gate subscription alerts on `xray_exporter_leader == 1` for the same exporter instance.
 
 ## Endpoints
 

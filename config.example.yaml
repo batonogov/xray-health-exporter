@@ -16,6 +16,7 @@ defaults:
 
 # Подписки: текст/Base64 (VLESS, VMess, Trojan, Shadowsocks), Xray JSON или Clash.
 # При ошибке сохраняется последний рабочий список в памяти.
+# Удалите демонстрационную подписку, если она не нужна: ошибка её первой загрузки блокирует запуск.
 subscriptions:
   - url: "https://provider.example.com/subscribe?token=replace-me"
     name: "primary"
@@ -69,6 +70,6 @@ tunnels:
 
 # Примечания:
 # - Требуется как минимум один статический туннель или подписка
-# - URL-туннель должен содержать валидную VLESS share-ссылку
+# - URL-туннель: валидная ссылка VLESS, VMess, Trojan или Shadowsocks
 # - SOCKS порты назначаются автоматически начиная с 1080 (1080, 1081, 1082, ...), или можно задать явно через socks_port
 # - Формат duration: "30s", "1m", "1h30m" и т.д.

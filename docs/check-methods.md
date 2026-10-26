@@ -7,16 +7,20 @@ Three health-check methods, selectable per tunnel via `check_method` (or globall
 Performs a `GET` against `check_url` through the tunnel's SOCKS5 proxy. The current implementation accepts status **200, 301, 302, or 307**.
 
 - Pass: HTTP status is 200, 301, 302, or 307.
-- Fail: any other status, or a transport error (classified into `xray_tunnel_error_total{reason=...}`).
+- Fail: any other status, or an error before receiving an accepted response (classified into `xray_tunnel_error_total{reason=...}`).
+
+The HTTP client follows redirects; the status check applies to the resulting response. After an accepted status, the checker reads up to 1024 response bytes. A body-read error is reported as a warning but the tunnel remains up.
 
 ## `ip`
 
 Fetches an IP-echo service (`ip_check_url`, default `https://api.ipify.org?format=text`) **through the proxy** and compares the returned IP with the host's real public IP.
 
-- Pass: status is 200 and the proxy-reported IP **differs** from the real public IP → traffic is actually routing through the proxy.
-- Fail: a non-200 status, matching IPs (proxy not in use), or a request error.
+- Pass: status is 200 and the trimmed response body differs from the trimmed direct response.
+- Fail: a non-200 status, identical response bodies, or a request/read error.
 
-The real IP is normally resolved once at startup. If that lookup fails, each `ip` check retries it before sending the proxied request.
+The current implementation compares strings, reading at most 256 bytes, and does not validate that either response is an IP address. Use a service that returns a plain-text IP, not JSON or HTML. Identical public IPs can also occur when the proxy shares the host’s egress; this check is a heuristic, not proof that traffic bypassed the proxy.
+
+In daemon mode, the direct response is resolved once at startup using `IP_CHECK_URL` (or the built-in default), independently of YAML defaults and per-tunnel URLs. It is not periodically refreshed. If startup lookup fails, each `ip` check retries using that tunnel’s `ip_check_url`. RUN_ONCE uses the latter path for every tunnel. The direct retry has its own 30-second timeout, in addition to the proxied request timeout.
 
 ## `download`
 

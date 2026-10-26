@@ -8,18 +8,22 @@ Internal structure of xray-health-exporter. After refactor (#111) the monolithic
 cmd/exporter/        — entrypoint
   ├─ main.go         run-mode dispatch (RUN_ONCE / LEADER_ELECTION / daemon), HTTP server, graceful shutdown
   └─ auth.go         Basic Auth middleware for /metrics (crypto/subtle.ConstantTimeCompare)
-internal/config/     — YAML config, defaults, env-overrides, subscription fetching
+internal/config/     — YAML config, defaults, env-overrides
+  ├─ subscription.go — HTTP subscription fetching, text/Base64 and native Xray JSON parsing
+  └─ subscription_clash.go — conversion of supported Clash proxies
 internal/checker/    — DefaultChecker: health-check implementation (http/ip/download)
 internal/tunnel/     — TunnelManager, TunnelInstance, Xray lifecycle, watchers, RunOnce
-  ├─ types.go        TunnelInstance, TunnelManager, HealthChecker / MetricsUpdater DI interfaces
-  ├─ xray.go         ParseVLESSURL, CreateXrayConfig / CreateStreamSettings, LoadXrayConfigFile,
+  ├─ types.go        TunnelInstance, HealthChecker / MetricsUpdater DI interfaces
+  ├─ xray.go         ParseVLESSURL, CreateXrayConfig / CreateStreamSettings, LoadXrayConfigFile / LoadXrayConfigJSON,
   │                  ExtractMetricLabelsFromXrayConfig, StartXray
-  ├─ xray_init.go    Xray instance init helpers
-  ├─ manager.go      InitializeTunnels, RunTunnelChecker, BackoffDuration, WaitForSOCKSPort,
+  ├─ share_links.go  VMess, Trojan and Shadowsocks share-link conversion
+  ├─ xray_init.go    Side-effect registration of embedded Xray protocols, transports and features
+  ├─ manager.go      TunnelManager, source cache/reconciliation, InitializeTunnels, RunTunnelChecker,
+  │                  BackoffDuration, WaitForSOCKSPort,
   │                  CleanupRemovedTunnelMetrics, NewPrometheusMetrics, RunProbing
   ├─ watcher.go      WatchConfigFile (fsnotify), WatchSubscriptions (periodic)
   └─ run_once.go     RunOnce — single check cycle → Prometheus text-exposition → exit
-internal/metrics/    — Prometheus metrics (metrics.go) + Pushgateway push (push.go)
+internal/metrics/    — Tunnel/exporter metrics (metrics.go), subscription metrics (subscriptions.go), Pushgateway (push.go)
 internal/socks/      — SOCKS5 dialer (SOCKS5Dialer.DialContext)
 internal/leaderelection/ — ReadLeaderElectionConfig, RunWithLeaderElection (k8s lease)
 ```
@@ -36,7 +40,7 @@ internal/leaderelection/ — ReadLeaderElectionConfig, RunWithLeaderElection (k8
 
 ### `internal/tunnel`
 
-- `TunnelInstance` — config + `*core.Instance` + SOCKS port + `MetricLabels` + check-method params. `VLESSConfig` is `nil` for `xray_config_file` tunnels.
+- `TunnelInstance` — config + `*core.Instance` + SOCKS port + `MetricLabels` + check-method params. `VLESSConfig` is `nil` for native configs and non-VLESS share links.
 - `TunnelManager` — list of active instances under a mutex, hot reload.
 - `HealthChecker` / `MetricsUpdater` — DI interfaces (decouple probing from concrete metric/checker implementations).
 - SOCKS ports are assigned sequentially from `DefaultSocksPort` (1080), or per-tunnel `socks_port` (#99).

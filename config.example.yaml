@@ -9,6 +9,7 @@ defaults:
   max_backoff: "5m"
   backoff_multiplier: 2.0
   check_method: "http" # http, ip или download
+  # Обычный текст с IP; URL общий для прямого запроса и прокси. Кеш IP хоста — 5 минут.
   ip_check_url: "https://api.ipify.org?format=text"
   download_url: "https://proof.ovh.net/files/1Mb.dat"
   download_timeout: "60s"
@@ -17,6 +18,7 @@ defaults:
 # Подписки: текст/Base64 (VLESS, VMess, Trojan, Shadowsocks), Xray JSON или Clash.
 # При ошибке сохраняется последний рабочий список в памяти.
 # Удалите демонстрационную подписку, если она не нужна: ошибка её первой загрузки блокирует запуск.
+# Совпадающие туннели из разных источников проверяются один раз; разные явные имена сохраняют отдельные проверки.
 subscriptions:
   - url: "https://provider.example.com/subscribe?token=replace-me"
     name: "primary"

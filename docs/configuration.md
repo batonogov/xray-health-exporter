@@ -39,14 +39,16 @@ Applied to every tunnel unless the tunnel overrides the field.
 |---|---|---|---|
 | `check_url` | string | `https://www.google.com` | URL for `http` checks |
 | `check_interval` | duration | `30s` | Time between checks |
-| `check_timeout` | duration | `30s` | Per-check timeout |
+| `check_timeout` | duration | `30s` | Per-check timeout; `ip` shares this budget between direct lookup and proxied request |
 | `max_backoff` | duration | `5m` | Max backoff on repeated failures; must be a positive Go duration |
 | `backoff_multiplier` | float | `2.0` | Backoff growth factor; must be finite and ≥ 1.0 |
 | `check_method` | string | `http` | `http` / `ip` / `download` |
-| `ip_check_url` | string | `https://api.ipify.org?format=text` | IP-echo URL for `ip` |
+| `ip_check_url` | string | `https://api.ipify.org?format=text` | Plain-text IP-echo URL used for both direct and proxied `ip` requests |
 | `download_url` | string | `https://proof.ovh.net/files/1Mb.dat` | File URL for `download` |
 | `download_timeout` | duration | `60s` | Timeout for `download` |
 | `download_min_size` | int | `51200` | Minimum bytes for `download` |
+
+For `ip`, successful direct responses are cached per effective URL for 5 minutes and refreshed on the next check after expiry. Failed refreshes never use the expired address. Lookups are lazy, with no startup request. See [check methods](check-methods.md#ip) for address validation and timeout behavior.
 
 ### `subscriptions` (optional, list)
 
@@ -73,6 +75,10 @@ VMess share links support Base64 JSON and URI forms. VMess ciphers are limited t
 Requests are limited to 10 MiB. Empty, malformed, unsupported, and oversized responses are errors, rather than instructions to delete servers. Custom authentication headers are removed on cross-origin redirects. Subscription redirects never send a `Referer`, so URL path/query tokens are not forwarded. Errors do not include the subscription URL or response body.
 
 Each source keeps its last successfully applied list **in memory** when refresh fails. A source without a usable cached list prevents the new configuration from being applied. In daemon mode, newly configured sources retry automatically on their schedules even if their first request fails. The cache does not survive restarts. Remove a source from YAML to intentionally remove its tunnels. Subscription metrics distinguish a failed refresh from unhealthy proxy servers. Applying an older staged response updates the accepted server count but preserves any newer fetch failure and the original successful fetch timestamp. `RUN_ONCE` fails if any subscription cannot be loaded, even if other sources work.
+
+Equivalent tunnels across sources and static entries are checked only once in both daemon and RUN_ONCE modes. Equivalence compares the complete effective Xray configuration (including credentials and routing) and probe settings, with JSON object ordering/whitespace and equivalent duration strings normalized. Exporter-replaced inbounds/logging and native display metadata do not affect equivalence. Different explicit names intentionally retain separate monitors; when an explicit name overlaps an automatically generated one, the explicit name wins. Unnamed monitors use the server address, or a stable configuration hash when no server can be extracted. Native config files are read once during candidate preparation, so identity checks and startup use the same bytes.
+
+An automatic SOCKS port can merge with one explicit port; repeated identical explicit ports collapse with their identical monitor. Conflicting explicit ports, or different credentials/check settings sharing the same full `name, server, security, sni` labels, reject the candidate before any new Xray instances start. Use distinct names to monitor distinct configurations. Source server counts retain each accepted list's size; `xray_exporter_tunnels_configured` reports the deduplicated monitor count.
 
 The watcher applies new sources and changed intervals without a restart. Unchanged tunnels retain their running Xray instances and SOCKS ports. New or modified tunnels start before removed instances stop. Replacing a changed tunnel that uses an already occupied explicit `socks_port` requires a restart or a different port; unchanged explicit ports are reused.
 
@@ -115,7 +121,7 @@ Each tunnel has **either** `url` **or** `xray_config_file` (mutually exclusive).
 | `backoff_multiplier` | float | Overrides `defaults.backoff_multiplier`; must be finite and ≥ 1.0 |
 | `socks_port` | int | Optional; auto-assigned from 1080 if unset. Validated unique, range 1–65535 |
 | `check_method` | string | `http` / `ip` / `download` |
-| `ip_check_url` | string | IP-echo URL for `ip` |
+| `ip_check_url` | string | Plain-text IP-echo URL used for both direct and proxied `ip` requests |
 | `download_url` | string | File URL for `download` |
 | `download_timeout` | duration | Timeout for `download` |
 | `download_min_size` | int | Minimum bytes for `download` |

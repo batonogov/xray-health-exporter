@@ -176,7 +176,7 @@ tunnels:
 ```
 
 **Tunnel parameters:**
-- `name` (optional) - tunnel name for logs and metrics. Static tunnels use the server endpoint, or `tunnel-port-N` if unavailable; subscriptions use response metadata or generated names
+- `name` (optional) - tunnel name for logs and metrics. Unnamed tunnels use the server endpoint, or a stable configuration hash if unavailable; subscriptions can supply explicit names in response metadata
 - `url` - VLESS, VMess, Trojan, or Shadowsocks URL (mutually exclusive with `xray_config_file`)
 - `xray_config_file` - path to a native Xray JSON config (mutually exclusive with `url`). The exporter replaces its `log` and `inbounds` sections with exporter-controlled settings; other top-level sections, including `outbounds`, are preserved
 - `check_url` (optional) - URL for availability checks
@@ -206,6 +206,7 @@ VLESS URLs follow the current Xray share-link format. Supported transports are `
 - Subscription lists support `vless://`, `vmess://`, `trojan://`, and `ss://`; unsupported formats/options fail explicitly
 - Upgrade note: an unsupported entry rejects the entire subscription response; unknown protocols are no longer silently skipped
 - VMess supports `auto`, `aes-128-gcm`, and `chacha20-poly1305`; `none`, `zero`, and KCP seeds are rejected. Subscription redirects never send `Referer`
+- Equivalent tunnels from overlapping subscriptions and static entries share one Xray instance and checker. Different explicit names remain separate monitors. Conflicting settings with the same metric labels reject the update; assign distinct names to monitor them separately.
 - Sources refresh independently; new subscriptions and interval changes apply without a restart. Failed refreshes retain the last working list in memory; unchanged tunnels keep running
 - Empty or invalid responses never remove servers. Remove a subscription from YAML to remove its servers. RUN_ONCE fails on any subscription error
 - `xray_subscription_*` metrics expose refresh health, last success, server count, and errors; see [configuration](docs/configuration.md) and [metrics](docs/metrics.md). Applying a saved response preserves newer fetch failures and the original fetch timestamp.
@@ -218,8 +219,10 @@ VLESS URLs follow the current Xray share-link format. Supported transports are `
 Three health-check methods are available, configurable per tunnel via `check_method` (or globally via `defaults.check_method`):
 
 - **`http`** (default) - GET the `check_url`; status `200`, `301`, `302`, or `307` passes.
-- **`ip`** - GET an IP-echo service through the proxy with status `200`, then compare its response text with the direct host response. The current implementation compares strings without validating IP syntax: use a plain-text IP service. This is a heuristic; a working proxy can share the host's public IP.
+- **`ip`** - Compare valid plain-text IP addresses from direct and proxied requests to the same `ip_check_url`; both require status `200`. IPv6 spellings and IPv4-mapped addresses are normalized; invalid, empty, oversized, and truncated responses fail. The host address is resolved lazily and cached per URL for 5 minutes; failed refreshes never use stale data. Both requests share `check_timeout`. This is a heuristic; a working proxy can share the host's public IP.
 - **`download`** - Require status `200`, then download at least `download_min_size` bytes through the proxy within `download_timeout`.
+
+No direct IP lookup runs at startup or for `http`/`download` checks. YAML defaults and per-tunnel `ip_check_url` values apply to both IP requests.
 
 All three methods measure successful-check latency as TTFB (time to first byte). See [`docs/check-methods.md`](docs/check-methods.md) for exact pass/fail behavior.
 

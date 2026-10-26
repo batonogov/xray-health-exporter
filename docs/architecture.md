@@ -36,7 +36,7 @@ internal/leaderelection/ — ReadLeaderElectionConfig, RunWithLeaderElection (k8
 
 ### `internal/checker`
 
-`DefaultChecker` implements `tunnel.HealthChecker`. `Check()` dispatches on `ti.CheckMethod`: `checkByIP` / `checkByDownload` / `PerformCheck` (http). TTFB instrumentation uses `ttfbRequest` + `resolveLatency` (falling back to total elapsed time on a successful check if the trace callback did not fire). `ResolveRealIP` normally resolves the host's real public IP once at startup for the `ip` method; if startup resolution fails, an `ip` check retries resolution.
+`DefaultChecker` implements `tunnel.HealthChecker`. `Check()` dispatches on `ti.CheckMethod`: `checkByIP` / `checkByDownload` / `PerformCheck` (http). TTFB instrumentation uses `ttfbRequest` + `resolveLatency` (falling back to total elapsed time on a successful check if the trace callback did not fire). `DefaultChecker` is shared by pointer and caches successful direct IP lookups for 5 minutes per effective tunnel endpoint, coalescing concurrent lookups. `ResolveRealIP` validates a plain-text address and bypasses HTTP proxy environment variables. Direct and proxied IP responses are compared as canonical addresses within one check timeout; expired cache entries are never used after a lookup failure. IP resolution is lazy, so other check methods and startup make no direct IP request.
 
 ### `internal/tunnel`
 

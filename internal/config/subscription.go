@@ -230,6 +230,7 @@ func parseTextSubscription(body []byte) ([]Tunnel, error) {
 		}
 		seen[line] = true
 		name := u.Fragment
+		generated := name == ""
 		if name == "" && u.Scheme == "vmess" {
 			if decoded, err := decodeSubscriptionBase64(strings.TrimPrefix(line, "vmess://")); err == nil {
 				var vmess struct {
@@ -238,6 +239,9 @@ func parseTextSubscription(body []byte) ([]Tunnel, error) {
 				}
 				if json.Unmarshal(decoded, &vmess) == nil {
 					name = vmess.Name
+					if name != "" {
+						generated = false
+					}
 					if name == "" {
 						name = vmess.Host
 					}
@@ -258,7 +262,7 @@ func parseTextSubscription(body []byte) ([]Tunnel, error) {
 			sum := sha256.Sum256([]byte(line))
 			name = fmt.Sprintf("server-%x", sum[:6])
 		}
-		tunnels = append(tunnels, Tunnel{Name: name, URL: line})
+		tunnels = append(tunnels, Tunnel{Name: name, NameGenerated: generated, URL: line})
 	}
 	if len(tunnels) == 0 {
 		return nil, errors.New("subscription contains no supported servers")
@@ -293,11 +297,12 @@ func parseXraySubscription(body []byte) ([]Tunnel, error) {
 		if name == "" {
 			_ = json.Unmarshal(cfg["name"], &name)
 		}
+		generated := name == ""
 		if name == "" {
 			sum := sha256.Sum256(raw)
 			name = fmt.Sprintf("xray-%x", sum[:6])
 		}
-		tunnels = append(tunnels, Tunnel{Name: name, XrayConfigJSON: append(json.RawMessage(nil), raw...)})
+		tunnels = append(tunnels, Tunnel{Name: name, NameGenerated: generated, XrayConfigJSON: append(json.RawMessage(nil), raw...)})
 	}
 	return tunnels, nil
 }

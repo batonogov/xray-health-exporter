@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1](https://github.com/batonogov/xray-health-exporter/compare/v1.8.0...v1.8.1) (2026-10-29)
+
+
+### Dependencies
+
+* **deps:** bump alpine ([#179](https://github.com/batonogov/xray-health-exporter/issues/179)) ([223d13a](https://github.com/batonogov/xray-health-exporter/commit/223d13a0fac980daa0a1b77be818e0172fa30813))
+* **deps:** bump docker/login-action ([#180](https://github.com/batonogov/xray-health-exporter/issues/180)) ([1354555](https://github.com/batonogov/xray-health-exporter/commit/1354555ee860cd0b10aff50af6d419ddb479f6ae))
+
 ## [1.8.0](https://github.com/batonogov/xray-health-exporter/compare/v1.7.6...v1.8.0) (2026-10-26)
 
 

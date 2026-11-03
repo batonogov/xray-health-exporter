@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.2](https://github.com/batonogov/xray-health-exporter/compare/v1.8.1...v1.8.2) (2026-11-03)
+
+
+### Dependencies
+
+* **deps:** bump golang ([#182](https://github.com/batonogov/xray-health-exporter/issues/182)) ([decfa45](https://github.com/batonogov/xray-health-exporter/commit/decfa45d5a51f596242ad2adaaf0d55589510581))
+* **deps:** bump the go-dependencies group with 3 updates ([#183](https://github.com/batonogov/xray-health-exporter/issues/183)) ([c67b14f](https://github.com/batonogov/xray-health-exporter/commit/c67b14f284c308643a8896186e163b081cba1be9))
+
 ## [1.8.1](https://github.com/batonogov/xray-health-exporter/compare/v1.8.0...v1.8.1) (2026-10-29)
 
 

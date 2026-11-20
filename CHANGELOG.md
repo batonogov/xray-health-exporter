@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.8.3](https://github.com/batonogov/xray-health-exporter/compare/v1.8.2...v1.8.3) (2026-11-20)
+
+
+### Dependencies
+
+* **deps:** bump alpine ([#186](https://github.com/batonogov/xray-health-exporter/issues/186)) ([e3b2caf](https://github.com/batonogov/xray-health-exporter/commit/e3b2cafa266ad7bff818a1b2de32b7bc3f3c7c88))
+* **deps:** bump github.com/prometheus/common ([#185](https://github.com/batonogov/xray-health-exporter/issues/185)) ([e80b776](https://github.com/batonogov/xray-health-exporter/commit/e80b776d5a66e94f6a6530eddc6c854b4943d130))
+* **deps:** bump the github-actions group with 2 updates ([#187](https://github.com/batonogov/xray-health-exporter/issues/187)) ([ea1305e](https://github.com/batonogov/xray-health-exporter/commit/ea1305e5b8f0350382655b8a34a89231758d8399))
+
 ## [1.8.2](https://github.com/batonogov/xray-health-exporter/compare/v1.8.1...v1.8.2) (2026-11-03)
 
 
